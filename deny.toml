@@ -1,0 +1,31 @@
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "OpenSSL",
+    "Zlib",
+]
+deny = [
+    "GPL-1.0",
+    "GPL-2.0",
+    "GPL-3.0",
+    "AGPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+]
+copyleft = "deny"
+
+[licenses.private]
+ignore = true
+
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "warn"
+notice = "warn"
+ignore = []

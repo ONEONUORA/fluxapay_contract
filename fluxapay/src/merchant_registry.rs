@@ -1,4 +1,6 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol,
+};
 
 #[contract]
 pub struct MerchantRegistry;
@@ -77,6 +79,8 @@ impl MerchantRegistry {
             return Err(Error::MerchantAlreadyExists);
         }
 
+        let event_currency = settlement_currency.clone();
+
         let merchant = Merchant {
             merchant_id: merchant_id.clone(),
             business_name,
@@ -90,7 +94,12 @@ impl MerchantRegistry {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Merchant(merchant_id), &merchant);
+            .set(&DataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "REGISTERED")),
+            (merchant_id, event_currency),
+        );
 
         Ok(())
     }
@@ -127,7 +136,12 @@ impl MerchantRegistry {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Merchant(merchant_id), &merchant);
+            .set(&DataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "UPDATED")),
+            merchant_id,
+        );
 
         Ok(())
     }
@@ -156,7 +170,12 @@ impl MerchantRegistry {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Merchant(merchant_id), &merchant);
+            .set(&DataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "VERIFIED")),
+            merchant_id,
+        );
 
         Ok(())
     }

@@ -152,7 +152,7 @@
                   "string": "PAY_SETTLE"
                 },
                 {
-                  "bytes": "64e5590fe426520b0236bf6f098ca3a7a0ae616046a6e778e598c53b836fa857"
+                  "bytes": "d669b7ba6870d46791d179e525878478ad898113a4a7b3cace4b4a71a94b956b"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
@@ -479,7 +479,7 @@
                         "symbol": "transaction_hash"
                       },
                       "val": {
-                        "bytes": "64e5590fe426520b0236bf6f098ca3a7a0ae616046a6e778e598c53b836fa857"
+                        "bytes": "d669b7ba6870d46791d179e525878478ad898113a4a7b3cace4b4a71a94b956b"
                       }
                     }
                   ]

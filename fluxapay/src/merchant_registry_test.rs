@@ -14,13 +14,25 @@ fn test_merchant_registration() {
     let business_name = String::from_str(&env, "Test Merchant");
     let settlement_currency = String::from_str(&env, "USDC");
 
-    client.register_merchant(&merchant_id, &business_name, &settlement_currency);
+    let payout_addr = Address::generate(&env);
+    client.register_merchant(
+        &merchant_id,
+        &business_name,
+        &settlement_currency,
+        &Some(payout_addr.clone()),
+        &Some(String::from_str(&env, "BANK-001")),
+    );
 
     let merchant = client.get_merchant(&merchant_id);
 
     assert_eq!(merchant.merchant_id, merchant_id);
     assert_eq!(merchant.business_name, business_name);
     assert_eq!(merchant.settlement_currency, settlement_currency);
+    assert_eq!(merchant.payout_address, Some(payout_addr));
+    assert_eq!(
+        merchant.bank_account,
+        Some(String::from_str(&env, "BANK-001"))
+    );
     // New: kyc_tier starts as Unverified
     assert_eq!(merchant.kyc_tier, KycTier::Unverified);
     assert!(merchant.active);
@@ -39,16 +51,25 @@ fn test_merchant_update() {
     let business_name = String::from_str(&env, "Initial name");
     let settlement_currency = String::from_str(&env, "USD");
 
-    client.register_merchant(&merchant_id, &business_name, &settlement_currency);
+    client.register_merchant(
+        &merchant_id,
+        &business_name,
+        &settlement_currency,
+        &None::<Address>,
+        &None::<String>,
+    );
 
     let new_name = String::from_str(&env, "New name");
     let new_currency = String::from_str(&env, "EUR");
+    let new_payout = Address::generate(&env);
 
     client.update_merchant(
         &merchant_id,
         &Some(new_name.clone()),
         &Some(new_currency.clone()),
         &Some(false),
+        &Some(new_payout.clone()),
+        &Some(String::from_str(&env, "BANK-002")),
     );
 
     let updated_merchant = client.get_merchant(&merchant_id);
@@ -56,6 +77,11 @@ fn test_merchant_update() {
     assert_eq!(updated_merchant.business_name, new_name);
     assert_eq!(updated_merchant.settlement_currency, new_currency);
     assert!(!updated_merchant.active);
+    assert_eq!(updated_merchant.payout_address, Some(new_payout));
+    assert_eq!(
+        updated_merchant.bank_account,
+        Some(String::from_str(&env, "BANK-002"))
+    );
 }
 
 #[test]
@@ -75,6 +101,8 @@ fn test_merchant_verification() {
         &merchant_id,
         &String::from_str(&env, "Merchant"),
         &String::from_str(&env, "USDC"),
+        &None::<Address>,
+        &None::<String>,
     );
 
     // verify_merchant sets KycTier::Basic for backward compatibility
@@ -103,6 +131,8 @@ fn test_unauthorized_verification() {
         &merchant_id,
         &String::from_str(&env, "Merchant"),
         &String::from_str(&env, "USDC"),
+        &None::<Address>,
+        &None::<String>,
     );
 
     // Attacker tries to verify the merchant
@@ -125,6 +155,8 @@ fn test_set_kyc_tier() {
         &merchant_id,
         &String::from_str(&env, "BigCorp"),
         &String::from_str(&env, "USDC"),
+        &None::<Address>,
+        &None::<String>,
     );
 
     // Promote through tiers
@@ -156,6 +188,8 @@ fn test_set_kyc_tier_unauthorized() {
         &merchant_id,
         &String::from_str(&env, "Merchant"),
         &String::from_str(&env, "USDC"),
+        &None::<Address>,
+        &None::<String>,
     );
 
     // Non-admin tries to set KYC tier

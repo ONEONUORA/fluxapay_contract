@@ -105,6 +105,7 @@ pub enum Error {
     Unauthorized = 10,
     DisputeNotFound = 11,
     DisputeAlreadyResolved = 12,
+    RefundExceedsPayment = 13,
 }
 
 #[contracttype]
@@ -178,6 +179,38 @@ impl RefundManager {
         AccessControl::get_role_members(&env, &role)
     }
 
+    /// Register a payment with the refund manager so refund amounts can be validated.
+    pub fn register_payment(
+        env: Env,
+        payment_id: String,
+        merchant_id: Address,
+        amount: i128,
+        currency: Symbol,
+    ) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Payment(payment_id.clone()))
+        {
+            let payment = PaymentCharge {
+                payment_id: payment_id.clone(),
+                merchant_id,
+                amount,
+                currency,
+                deposit_address: env.current_contract_address(),
+                status: PaymentStatus::Pending,
+                payer_address: None,
+                transaction_hash: None,
+                created_at: env.ledger().timestamp(),
+                confirmed_at: None,
+                expires_at: 0,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Payment(payment_id), &payment);
+        }
+    }
+
     pub fn create_refund(
         env: Env,
         payment_id: String,
@@ -198,6 +231,28 @@ impl RefundManager {
     ) -> Result<String, Error> {
         if refund_amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        // Validate refund amount does not exceed original payment amount
+        let payment: PaymentCharge = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Payment(payment_id.clone()))
+            .ok_or(Error::PaymentNotFound)?;
+
+        // Sum existing refund amounts for this payment
+        let existing_refunds = Self::get_payment_refunds_internal(env, &payment_id);
+        let mut total_refunded: i128 = 0;
+        for id in existing_refunds.iter() {
+            if let Ok(r) = Self::get_refund_internal(env, &id) {
+                if r.status != RefundStatus::Rejected {
+                    total_refunded += r.amount;
+                }
+            }
+        }
+
+        if total_refunded + refund_amount > payment.amount {
+            return Err(Error::RefundExceedsPayment);
         }
 
         let counter = Self::get_next_refund_id(&env);

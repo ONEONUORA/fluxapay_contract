@@ -208,9 +208,13 @@ fn test_create_and_get_refund() {
     let (_, client) = setup_refund_manager(&env);
 
     let payment_id = String::from_str(&env, "payment_123");
+    let merchant_id = Address::generate(&env);
     let refund_amount = 1000i128;
     let reason = String::from_str(&env, "Reason");
     let requester = Address::generate(&env);
+
+    // Register payment so refund amount can be validated
+    client.register_payment(&payment_id, &merchant_id, &5000i128, &Symbol::new(&env, "USDC"));
 
     let refund_id = client.create_refund(&payment_id, &refund_amount, &reason, &requester);
     let refund = client.get_refund(&refund_id);
@@ -227,8 +231,12 @@ fn test_process_refund() {
     let (admin, client) = setup_refund_manager(&env);
 
     let payment_id = String::from_str(&env, "payment_123");
+    let merchant_id = Address::generate(&env);
     let refund_amount = 1000i128;
     let requester = Address::generate(&env);
+
+    client.register_payment(&payment_id, &merchant_id, &5000i128, &Symbol::new(&env, "USDC"));
+
     let refund_id = client.create_refund(
         &payment_id,
         &refund_amount,
@@ -292,7 +300,10 @@ fn test_multiple_refunds_unique_ids() {
     let (_, client) = setup_refund_manager(&env);
 
     let payment_id = String::from_str(&env, "payment_123");
+    let merchant_id = Address::generate(&env);
     let requester = Address::generate(&env);
+
+    client.register_payment(&payment_id, &merchant_id, &5000i128, &Symbol::new(&env, "USDC"));
 
     // Create first refund
     let refund_id_1 = client.create_refund(
@@ -345,7 +356,10 @@ fn test_create_refund_requires_auth() {
     let (_, client) = setup_refund_manager(&env);
 
     let payment_id = String::from_str(&env, "payment_123");
+    let merchant_id = Address::generate(&env);
     let requester = Address::generate(&env);
+
+    client.register_payment(&payment_id, &merchant_id, &5000i128, &Symbol::new(&env, "USDC"));
 
     // This should panic because we're not mocking auth
     client.create_refund(

@@ -20,6 +20,10 @@ pub struct Merchant {
     pub merchant_id: Address,
     pub business_name: String,
     pub settlement_currency: String,
+    /// On-chain address where settled funds are sent.
+    pub payout_address: Option<Address>,
+    /// Off-chain bank account reference for fiat payouts.
+    pub bank_account: Option<String>,
     /// KYC tier replaces the old `verified: bool` field.
     pub kyc_tier: KycTier,
     pub active: bool,
@@ -60,6 +64,8 @@ impl MerchantRegistry {
         merchant_id: Address,
         business_name: String,
         settlement_currency: String,
+        payout_address: Option<Address>,
+        bank_account: Option<String>,
     ) -> Result<(), Error> {
         merchant_id.require_auth();
 
@@ -75,6 +81,8 @@ impl MerchantRegistry {
             merchant_id: merchant_id.clone(),
             business_name,
             settlement_currency,
+            payout_address,
+            bank_account,
             kyc_tier: KycTier::Unverified,
             active: true,
             created_at: env.ledger().timestamp(),
@@ -94,6 +102,8 @@ impl MerchantRegistry {
         business_name: Option<String>,
         settlement_currency: Option<String>,
         active: Option<bool>,
+        payout_address: Option<Address>,
+        bank_account: Option<String>,
     ) -> Result<(), Error> {
         merchant_id.require_auth();
 
@@ -107,6 +117,12 @@ impl MerchantRegistry {
         }
         if let Some(is_active) = active {
             merchant.active = is_active;
+        }
+        if let Some(addr) = payout_address {
+            merchant.payout_address = Some(addr);
+        }
+        if let Some(acct) = bank_account {
+            merchant.bank_account = Some(acct);
         }
 
         env.storage()

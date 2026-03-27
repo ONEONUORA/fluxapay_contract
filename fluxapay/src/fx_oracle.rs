@@ -24,21 +24,21 @@ pub enum FXOracleError {
 }
 
 #[contracttype]
-pub enum DataKey {
+pub enum OracleDataKey {
     Rate(Symbol),
     StalenessThreshold,
 }
 
 #[contractimpl]
 impl FXOracle {
-    pub fn initialize(env: Env, admin: Address, staleness_threshold: u64) {
+    pub fn oracle_initialize(env: Env, admin: Address, staleness_threshold: u64) {
         AccessControl::initialize(&env, admin);
         env.storage()
             .instance()
-            .set(&DataKey::StalenessThreshold, &staleness_threshold);
+            .set(&OracleDataKey::StalenessThreshold, &staleness_threshold);
     }
 
-    pub fn grant_role(
+    pub fn oracle_grant_role(
         env: Env,
         admin: Address,
         role: Symbol,
@@ -48,10 +48,11 @@ impl FXOracle {
             .map_err(|_| FXOracleError::Unauthorized)
     }
 
-    pub fn has_role(env: Env, role: Symbol, account: Address) -> bool {
+    pub fn oracle_has_role(env: Env, role: Symbol, account: Address) -> bool {
         AccessControl::has_role(&env, &role, &account)
     }
 
+    pub fn get_oracle_admin(env: Env) -> Option<Address> {
     pub fn get_fx_admin(env: Env) -> Option<Address> {
         AccessControl::get_admin(&env)
     }
@@ -78,7 +79,7 @@ impl FXOracle {
 
         env.storage()
             .persistent()
-            .set(&DataKey::Rate(pair.clone()), &rate_data);
+            .set(&OracleDataKey::Rate(pair.clone()), &rate_data);
 
         // Emit event: (RATE, UPDATED), pair
         env.events().publish(
@@ -93,13 +94,13 @@ impl FXOracle {
         let rate_data: RateData = env
             .storage()
             .persistent()
-            .get(&DataKey::Rate(pair))
+            .get(&OracleDataKey::Rate(pair))
             .ok_or(FXOracleError::RateNotFound)?;
 
         let threshold: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::StalenessThreshold)
+            .get(&OracleDataKey::StalenessThreshold)
             .unwrap_or(86400);
 
         if env.ledger().timestamp() > rate_data.updated_at + threshold {
@@ -127,7 +128,7 @@ impl FXOracle {
     pub fn get_staleness_threshold(env: Env) -> u64 {
         env.storage()
             .instance()
-            .get(&DataKey::StalenessThreshold)
+            .get(&OracleDataKey::StalenessThreshold)
             .unwrap_or(86400)
     }
 
@@ -144,7 +145,7 @@ impl FXOracle {
 
         env.storage()
             .instance()
-            .set(&DataKey::StalenessThreshold, &threshold);
+            .set(&OracleDataKey::StalenessThreshold, &threshold);
         Ok(())
     }
 }

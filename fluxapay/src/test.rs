@@ -83,7 +83,7 @@ fn test_verify_payment_success() {
     let payer_address = Address::generate(&env);
     let transaction_hash = BytesN::<32>::random(&env);
     let oracle = Address::generate(&env);
-    client.grant_role(&admin, &role_oracle(&env), &oracle);
+    client.payment_grant_role(&admin, &role_oracle(&env), &oracle);
 
     let status = client.verify_payment(
         &oracle,
@@ -245,7 +245,7 @@ fn test_process_refund() {
     );
 
     let operator = Address::generate(&env);
-    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
+    client.refund_grant_role(&admin, &role_settlement_operator(&env), &operator);
 
     client.process_refund(&operator, &refund_id);
 
@@ -264,8 +264,8 @@ fn test_initialize_contract() {
     let client = RefundManagerClient::new(&env, &contract_id);
     client.initialize_refund_manager(&admin, &usdc_token);
 
-    assert_eq!(client.get_admin(), Some(admin.clone()));
-    assert!(client.has_role(&role_admin(&env), &admin));
+    assert_eq!(client.refund_get_admin(), Some(admin.clone()));
+    assert!(client.refund_has_role(&role_admin(&env), &admin));
 }
 
 #[test]
@@ -276,8 +276,8 @@ fn test_grant_role() {
     let account = Address::generate(&env);
     let role = role_oracle(&env);
 
-    client.grant_role(&admin, &role, &account);
-    assert!(client.has_role(&role, &account));
+    client.refund_grant_role(&admin, &role, &account);
+    assert!(client.refund_has_role(&role, &account));
 }
 
 #[test]
@@ -287,10 +287,9 @@ fn test_transfer_admin() {
     let (current_admin, client) = setup_refund_manager(&env);
     let new_admin = Address::generate(&env);
 
-    client.transfer_admin(&current_admin, &new_admin);
-
-    assert!(client.has_role(&role_admin(&env), &new_admin));
-    assert_eq!(client.get_admin(), Some(new_admin));
+    client.refund_transfer_admin(&current_admin, &new_admin);
+    assert!(client.refund_has_role(&role_admin(&env), &new_admin));
+    assert_eq!(client.refund_get_admin(), Some(new_admin));
 }
 
 #[test]

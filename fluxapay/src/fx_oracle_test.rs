@@ -10,7 +10,7 @@ fn setup_oracle(env: &Env) -> (Address, FXOracleClient<'_>) {
     let contract_id = env.register(FXOracle, ());
     let client = FXOracleClient::new(env, &contract_id);
     let admin = Address::generate(env);
-    client.initialize(&admin, &86400); // 24 hour threshold
+    client.oracle_initialize(&admin, &86400); // 24 hour threshold
     (admin, client)
 }
 
@@ -21,7 +21,7 @@ fn test_set_and_get_rate() {
     let (admin, client) = setup_oracle(&env);
 
     let oracle = Address::generate(&env);
-    client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    client.oracle_grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
 
     let pair = Symbol::new(&env, "USDC_NGN");
     let rate = 1500_0000000i128; // 1500 NGN/USDC
@@ -56,7 +56,7 @@ fn test_staleness_check() {
     let (admin, client) = setup_oracle(&env);
 
     let oracle = Address::generate(&env);
-    client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    client.oracle_grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
 
     let pair = Symbol::new(&env, "USDC_NGN");
     client.set_rate(&oracle, &pair, &1500i128, &0);
@@ -76,7 +76,7 @@ fn test_settlement_amount_calculation() {
     let (admin, client) = setup_oracle(&env);
 
     let oracle = Address::generate(&env);
-    client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    client.oracle_grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
 
     // 1 USDC = 1500.50 NGN (2 decimals: 150050)
     let pair = Symbol::new(&env, "NGN");

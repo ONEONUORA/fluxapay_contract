@@ -78,6 +78,8 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Check Documentation
+        run: cargo doc --no-deps
   # Job 3: Security Scan (Audit & Deny)
   security-audit:
     name: Security Scan
@@ -316,10 +318,35 @@ jobs:
               }
             }
 
+  # Job 6: Check SDK build
+  sdk-check:
+    name: SDK Build Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-working-directory: sdk
+
+      - name: Install dependencies
+        working-directory: sdk
+        run: npm install
+
+      - name: Build SDK
+        working-directory: sdk
+        run: npm run build
+
   # Final job: Report overall status
   ci-success:
     name: CI Success
     if: ${{ always() }}
+    needs: [format, lint, build, test, coverage, sdk-check]
     needs: [format, lint, security-audit, build, test, coverage]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -331,7 +358,8 @@ jobs:
              [[ "${{ needs.security-audit.result }}" == "success" ]] && \
              [[ "${{ needs.build.result }}" == "success" ]] && \
              [[ "${{ needs.test.result }}" == "success" ]] && \
-             [[ "${{ needs.coverage.result }}" == "success" ]]; then
+             [[ "${{ needs.coverage.result }}" == "success" ]] && \
+             [[ "${{ needs.sdk-check.result }}" == "success" ]]; then
             echo "✅ All CI checks passed!"
             exit 0
           else

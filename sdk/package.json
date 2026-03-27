@@ -1,0 +1,30 @@
+{
+  "name": "@fluxapay/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript/JavaScript SDK for FluxaPay Soroban contracts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "stellar",
+    "soroban",
+    "fluxapay",
+    "sdk",
+    "crypto",
+    "payments"
+  ],
+  "author": "FluxaPay Team",
+  "license": "MIT",
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

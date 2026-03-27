@@ -156,6 +156,9 @@ fn test_resolve_dispute_with_refund() {
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
 
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
+
     // Create dispute
     let dispute_reason = String::from_str(&env, "Defective product");
     let evidence = String::from_str(&env, "Video evidence of defect");
@@ -353,6 +356,9 @@ fn test_resolve_dispute_with_only_operator_auth() {
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     let tx_hash = BytesN::<32>::random(&env);
     payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
+
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
 
     let dispute_id = refund_client.create_dispute(
         &payment_id,

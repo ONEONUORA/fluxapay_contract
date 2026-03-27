@@ -105,6 +105,7 @@ pub enum Error {
     Unauthorized = 10,
     DisputeNotFound = 11,
     DisputeAlreadyResolved = 12,
+    RefundExceedsPayment = 13,
 }
 
 #[contracttype]
@@ -178,6 +179,39 @@ impl RefundManager {
         AccessControl::get_role_members(&env, &role)
     }
 
+    /// Register a payment with the refund manager so refund amounts can be validated.
+    pub fn register_payment(
+        env: Env,
+        payment_id: String,
+        merchant_id: Address,
+        amount: i128,
+        currency: Symbol,
+    ) {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Payment(payment_id.clone()))
+        {
+            let payment = PaymentCharge {
+                payment_id: payment_id.clone(),
+                merchant_id,
+                amount,
+                currency,
+                deposit_address: env.current_contract_address(),
+                status: PaymentStatus::Pending,
+                payer_address: None,
+                transaction_hash: None,
+                created_at: env.ledger().timestamp(),
+                confirmed_at: None,
+                expires_at: 0,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Payment(payment_id.clone()), &payment);
+            Self::bump_payment_ttl(&env, &payment_id, &payment.status);
+        }
+    }
+
     pub fn create_refund(
         env: Env,
         payment_id: String,
@@ -198,6 +232,28 @@ impl RefundManager {
     ) -> Result<String, Error> {
         if refund_amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        // Validate refund amount does not exceed original payment amount
+        let payment: PaymentCharge = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Payment(payment_id.clone()))
+            .ok_or(Error::PaymentNotFound)?;
+
+        // Sum existing refund amounts for this payment
+        let existing_refunds = Self::get_payment_refunds_internal(env, &payment_id);
+        let mut total_refunded: i128 = 0;
+        for id in existing_refunds.iter() {
+            if let Ok(r) = Self::get_refund_internal(env, &id) {
+                if r.status != RefundStatus::Rejected {
+                    total_refunded += r.amount;
+                }
+            }
+        }
+
+        if total_refunded + refund_amount > payment.amount {
+            return Err(Error::RefundExceedsPayment);
         }
 
         let counter = Self::get_next_refund_id(&env);
@@ -227,6 +283,9 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::PaymentRefunds(payment_id.clone()), &payment_refunds);
+        Self::bump_ttl(&env, &DataKey::PaymentRefunds(payment_id.clone()), LONG_LIVE_TTL);
+
+        Self::bump_refund_ttl(&env, &refund_id, &refund.status);
 
         // Issue #27: emit REFUND/CREATED event
         env.events().publish(
@@ -280,6 +339,7 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::Refund(refund_id.clone()), &refund);
+        Self::bump_refund_ttl(&env, &refund_id, &refund.status);
 
         // Issue #27: emit REFUND/COMPLETED event
         env.events().publish(
@@ -313,6 +373,7 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::Refund(refund_id.clone()), &refund);
+        Self::bump_refund_ttl(&env, &refund_id, &refund.status);
 
         // Issue #27: emit REFUND/REJECTED event
         env.events().publish(
@@ -406,6 +467,9 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::PaymentDisputes(payment_id.clone()), &payment_disputes);
+        Self::bump_ttl(&env, &DataKey::PaymentDisputes(payment_id.clone()), LONG_LIVE_TTL);
+
+        Self::bump_dispute_ttl(&env, &dispute_id, &dispute.status);
 
         // Issue #27: emit DISPUTE/OPENED event
         env.events().publish(
@@ -438,6 +502,7 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
+        Self::bump_dispute_ttl(&env, &dispute_id, &dispute.status);
 
         // Issue #27: emit DISPUTE/UNDER_REVIEW event
         env.events().publish(
@@ -493,6 +558,7 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
+        Self::bump_dispute_ttl(&env, &dispute_id, &dispute.status);
 
         // Issue #27: emit DISPUTE/RESOLVED event
         env.events().publish(
@@ -532,6 +598,7 @@ impl RefundManager {
         env.storage()
             .persistent()
             .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
+        Self::bump_dispute_ttl(&env, &dispute_id, &dispute.status);
 
         // Issue #27: emit DISPUTE/REJECTED event
         env.events().publish(
@@ -586,6 +653,50 @@ impl RefundManager {
             .persistent()
             .get(&DataKey::PaymentDisputes(payment_id.clone()))
             .unwrap_or_else(|| vec![env])
+    }
+
+    fn refund_ttl(status: &RefundStatus) -> u32 {
+        match status {
+            RefundStatus::Pending => SHORT_LIVE_TTL,
+            RefundStatus::Completed | RefundStatus::Rejected => LONG_LIVE_TTL,
+        }
+    }
+
+    fn bump_refund_ttl(env: &Env, refund_id: &String, status: &RefundStatus) {
+        let key = DataKey::Refund(refund_id.clone());
+        Self::bump_ttl(env, &key, Self::refund_ttl(status));
+    }
+
+    fn dispute_ttl(status: &DisputeStatus) -> u32 {
+        match status {
+            DisputeStatus::Open | DisputeStatus::UnderReview => SHORT_LIVE_TTL,
+            DisputeStatus::Resolved | DisputeStatus::Rejected => LONG_LIVE_TTL,
+        }
+    }
+
+    fn bump_dispute_ttl(env: &Env, dispute_id: &String, status: &DisputeStatus) {
+        let key = DataKey::Dispute(dispute_id.clone());
+        Self::bump_ttl(env, &key, Self::dispute_ttl(status));
+    }
+
+    fn payment_ttl(status: &PaymentStatus) -> u32 {
+        match status {
+            PaymentStatus::Pending => SHORT_LIVE_TTL,
+            PaymentStatus::Confirmed
+            | PaymentStatus::Settled
+            | PaymentStatus::Expired
+            | PaymentStatus::Failed => LONG_LIVE_TTL,
+        }
+    }
+
+    fn bump_payment_ttl(env: &Env, payment_id: &String, status: &PaymentStatus) {
+        let key = DataKey::Payment(payment_id.clone());
+        Self::bump_ttl(env, &key, Self::payment_ttl(status));
+    }
+
+    fn bump_ttl(env: &Env, key: &DataKey, ttl: u32) {
+        let threshold = core::cmp::max(1, ttl / TTL_BUMP_THRESHOLD_DIVISOR);
+        env.storage().persistent().extend_ttl(key, threshold, ttl);
     }
 }
 

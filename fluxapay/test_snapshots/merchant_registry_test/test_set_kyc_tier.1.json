@@ -24,7 +24,9 @@
                 },
                 {
                   "string": "USDC"
-                }
+                },
+                "void",
+                "void"
               ]
             }
           },
@@ -189,6 +191,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "business_name"
                       },
                       "val": {
@@ -222,6 +230,12 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "payout_address"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

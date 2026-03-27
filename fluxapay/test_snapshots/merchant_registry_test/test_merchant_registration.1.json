@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0,
     "mux_id": 0
   },
@@ -23,6 +23,12 @@
                 },
                 {
                   "string": "USDC"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                },
+                {
+                  "string": "BANK-001"
                 }
               ]
             }
@@ -90,6 +96,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": {
+                        "string": "BANK-001"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "business_name"
                       },
                       "val": {
@@ -122,6 +136,14 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "payout_address"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                       }
                     },
                     {

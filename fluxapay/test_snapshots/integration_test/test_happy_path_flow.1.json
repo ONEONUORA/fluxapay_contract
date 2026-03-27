@@ -69,7 +69,9 @@
                 },
                 {
                   "string": "USD"
-                }
+                },
+                "void",
+                "void"
               ]
             }
           },
@@ -175,7 +177,7 @@
                   "string": "PAY_01"
                 },
                 {
-                  "bytes": "160607fba1d715c4df3c698e850a67f9c76501e8d1dd619ae0cad135720b3add"
+                  "bytes": "33a58796cb91464cc864485256ac71f4ae46ff82e805ac616af0ff956bc08bc4"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
@@ -190,6 +192,7 @@
         }
       ]
     ],
+    [],
     [],
     [
       [
@@ -560,7 +563,7 @@
                         "symbol": "transaction_hash"
                       },
                       "val": {
-                        "bytes": "160607fba1d715c4df3c698e850a67f9c76501e8d1dd619ae0cad135720b3add"
+                        "bytes": "33a58796cb91464cc864485256ac71f4ae46ff82e805ac616af0ff956bc08bc4"
                       }
                     }
                   ]
@@ -978,7 +981,7 @@
             },
             "ext": "v0"
           },
-          4095
+          6311999
         ]
       ],
       [
@@ -1027,6 +1030,138 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "Payment"
+                },
+                {
+                  "string": "PAY_01"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "Payment"
+                    },
+                    {
+                      "string": "PAY_01"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "amount"
+                      },
+                      "val": {
+                        "i128": "1000"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "confirmed_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "currency"
+                      },
+                      "val": {
+                        "symbol": "USDC"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "deposit_address"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "expires_at"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "merchant_id"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "payer_address"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "payment_id"
+                      },
+                      "val": {
+                        "string": "PAY_01"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "status"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Pending"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "transaction_hash"
+                      },
+                      "val": "void"
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          120960
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+            "key": {
+              "vec": [
+                {
                   "symbol": "PaymentDisputes"
                 },
                 {
@@ -1066,7 +1201,7 @@
             },
             "ext": "v0"
           },
-          4095
+          6311999
         ]
       ],
       [
@@ -1115,7 +1250,7 @@
             },
             "ext": "v0"
           },
-          4095
+          6311999
         ]
       ],
       [
@@ -1229,7 +1364,7 @@
             },
             "ext": "v0"
           },
-          4095
+          6311999
         ]
       ],
       [
@@ -1628,6 +1763,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "bank_account"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "business_name"
                       },
                       "val": {
@@ -1661,6 +1802,12 @@
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "payout_address"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

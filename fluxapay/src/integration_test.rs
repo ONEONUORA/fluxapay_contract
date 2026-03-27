@@ -53,6 +53,8 @@ fn test_happy_path_flow() {
         &merchant,
         &String::from_str(&env, "Flux Merchant"),
         &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
     );
     merchant_client.verify_merchant(&admin, &merchant);
     let merchant_info = merchant_client.get_merchant(&merchant);
@@ -79,6 +81,9 @@ fn test_happy_path_flow() {
 
     let payment_info = payment_client.get_payment(&payment_id);
     assert_eq!(payment_info.status, PaymentStatus::Confirmed);
+
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
 
     // 3. Create Dispute and Resolve with Refund
     let dispute_id = refund_client.create_dispute(

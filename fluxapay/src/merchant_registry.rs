@@ -1,4 +1,6 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, String, Symbol,
+};
 
 #[contract]
 pub struct MerchantRegistry;
@@ -20,6 +22,10 @@ pub struct Merchant {
     pub merchant_id: Address,
     pub business_name: String,
     pub settlement_currency: String,
+    /// On-chain address where settled funds are sent.
+    pub payout_address: Option<Address>,
+    /// Off-chain bank account reference for fiat payouts.
+    pub bank_account: Option<String>,
     /// KYC tier replaces the old `verified: bool` field.
     pub kyc_tier: KycTier,
     pub active: bool,
@@ -64,6 +70,8 @@ impl MerchantRegistry {
         merchant_id: Address,
         business_name: String,
         settlement_currency: String,
+        payout_address: Option<Address>,
+        bank_account: Option<String>,
     ) -> Result<(), Error> {
         merchant_id.require_auth();
 
@@ -75,10 +83,14 @@ impl MerchantRegistry {
             return Err(Error::MerchantAlreadyExists);
         }
 
+        let event_currency = settlement_currency.clone();
+
         let merchant = Merchant {
             merchant_id: merchant_id.clone(),
             business_name,
             settlement_currency,
+            payout_address,
+            bank_account,
             kyc_tier: KycTier::Unverified,
             active: true,
             created_at: env.ledger().timestamp(),
@@ -90,6 +102,10 @@ impl MerchantRegistry {
 
         // Add to merchant list for enumeration
         Self::add_to_merchant_list(&env, &merchant_id);
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "REGISTERED")),
+            (merchant_id, event_currency),
+        );
 
         Ok(())
     }
@@ -101,6 +117,8 @@ impl MerchantRegistry {
         business_name: Option<String>,
         settlement_currency: Option<String>,
         active: Option<bool>,
+        payout_address: Option<Address>,
+        bank_account: Option<String>,
     ) -> Result<(), Error> {
         merchant_id.require_auth();
 
@@ -115,10 +133,21 @@ impl MerchantRegistry {
         if let Some(is_active) = active {
             merchant.active = is_active;
         }
+        if let Some(addr) = payout_address {
+            merchant.payout_address = Some(addr);
+        }
+        if let Some(acct) = bank_account {
+            merchant.bank_account = Some(acct);
+        }
 
         env.storage()
             .persistent()
-            .set(&DataKey::Merchant(merchant_id), &merchant);
+            .set(&DataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "UPDATED")),
+            merchant_id,
+        );
 
         Ok(())
     }
@@ -165,6 +194,10 @@ impl MerchantRegistry {
                 &merchant_id,
             );
         }
+        env.events().publish(
+            (Symbol::new(&env, "MERCHANT"), Symbol::new(&env, "VERIFIED")),
+            merchant_id,
+        );
 
         Ok(())
     }

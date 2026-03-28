@@ -61,6 +61,9 @@ fn test_create_dispute() {
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
 
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
+
     // Create dispute
     let dispute_reason = String::from_str(&env, "Product not received");
     let evidence = String::from_str(&env, "Tracking shows delivery failed");
@@ -113,6 +116,9 @@ fn test_review_dispute() {
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
+
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
 
     // Create dispute
     let dispute_reason = String::from_str(&env, "Wrong item received");
@@ -233,6 +239,9 @@ fn test_reject_dispute() {
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
 
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
+
     // Create dispute
     let dispute_reason = String::from_str(&env, "Unauthorized charge");
     let evidence = String::from_str(&env, "No evidence provided");
@@ -283,6 +292,9 @@ fn test_get_payment_disputes() {
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
+
+    // Register payment with refund manager for amount validation
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
 
     // Create multiple disputes
     let _dispute_id1 = refund_client.create_dispute(

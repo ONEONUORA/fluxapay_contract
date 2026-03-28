@@ -194,6 +194,9 @@ fn test_failure_and_expiration_path() {
     let payment_info = payment_client.get_payment(&payment_id);
     assert_eq!(payment_info.status, PaymentStatus::Expired);
 
+    // Register payment with refund manager (with Confirmed status for testing)
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
+
     // Try to dispute an expired/cancelled payment - should still be possible to create, but maybe rejected?
     let customer = Address::generate(&env);
     let dispute_id = refund_client.create_dispute(

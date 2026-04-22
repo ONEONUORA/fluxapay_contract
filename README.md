@@ -12,6 +12,15 @@ Automated testing and deployment pipeline using GitHub Actions:
 - **CD:** Auto-deploys to development and staging on merge to main; production requires manual approval
 - All tests must pass before deployment
 
+### Security and Dependency Checks (Local)
+
+- `cargo audit --deny warnings`
+- `cargo deny check bans licenses advisories`
+
+### Bounded Property Tests (Local)
+
+- `PROPTEST_CASES=64 cargo test -p fluxapay proptests:: --all-features -- --test-threads=1`
+
 ---
 
 ## What Problem does Fluxapay solve?
@@ -125,6 +134,26 @@ Make stablecoin payments simple, practical, and accessible so merchants can sell
 
 Contributions are welcome!  
 Open an issue or submit a PR to help build Fluxapay.
+
+### Local Development Setup
+
+1. **Environment Variables**: Copy `.env.example` to `.env` and populate with your testnet credentials (do not commit `.env`):
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Stellar testnet keys and contract IDs
+   ```
+
+2. **Local Contract Invocation**: See [docs/local-invoke.md](docs/local-invoke.md) for step-by-step recipes to test `create_payment`, `register_merchant`, and other contract functions on testnet.
+
+3. **Running Tests**:
+   ```bash
+   cd fluxapay && make test
+   ```
+
+4. **Code Quality**: Format, lint, and audit before submitting:
+   ```bash
+   cd fluxapay && make fmt && cargo clippy --all-targets --all-features && cargo audit
+   ```
 
 ## Security
 

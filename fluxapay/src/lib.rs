@@ -321,6 +321,8 @@ pub enum DataKey {
     MerchantAmountLimits(Address),
     GlobalAmountLimits,
     IdempotencyKey(String),
+    /// Key used by the payment streaming module.
+    Stream(String),
     SubscriptionPlan(String),
     Subscription(String),
     PayerSubscriptions(Address),
@@ -2498,6 +2500,12 @@ mod pause_test;
 #[cfg(test)]
 mod payment_link_test;
 mod test;
+
+// Payment streaming module (Issue #127)
+pub mod stream;
+pub use stream::{PaymentStreaming, PaymentStreamingClient, StreamError, StreamStatus};
+#[cfg(test)]
+mod stream_test;
 
 pub mod utils;
 pub use utils::format_id;

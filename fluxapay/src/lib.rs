@@ -182,6 +182,8 @@ pub enum DataKey {
     MerchantAmountLimits(Address),
     GlobalAmountLimits,
     IdempotencyKey(String),
+    /// Key used by the payment streaming module.
+    Stream(String),
 }
 
 const SHORT_LIVE_TTL: u32 = 120_960; // ~1 week at 5s/ledger
@@ -1681,6 +1683,12 @@ mod pause_test;
 #[cfg(test)]
 mod payment_link_test;
 mod test;
+
+// Payment streaming module (Issue #127)
+pub mod stream;
+pub use stream::{PaymentStreaming, PaymentStreamingClient, StreamError, StreamStatus};
+#[cfg(test)]
+mod stream_test;
 
 pub mod utils;
 pub use utils::format_id;

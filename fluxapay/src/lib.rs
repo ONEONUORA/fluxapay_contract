@@ -2523,3 +2523,6 @@ mod stream_test;
 
 pub mod utils;
 pub use utils::format_id;
+
+pub mod gas_estimator;
+pub use gas_estimator::{CostEstimate, GasEstimator, GasEstimatorClient, Operation};

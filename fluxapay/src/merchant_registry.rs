@@ -1,5 +1,6 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, vec, Address, Env, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, map, vec, Address, Env, Map, String,
+    Symbol, Vec,
 };
 
 #[contract]
@@ -14,6 +15,55 @@ pub enum KycTier {
     Basic,
     Full,
     Business,
+}
+
+/// Fee configuration for a merchant.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeConfig {
+    /// Platform fee in basis points (100 bps = 1%). 0 means no fee.
+    pub platform_fee_bps: i64,
+    /// Fixed fee per transaction in the smallest currency unit.
+    pub fixed_fee: i128,
+    /// Optional: custom fee recipient address (defaults to admin if None).
+    pub fee_recipient: Option<Address>,
+}
+
+/// Soroban-compatible nullable wrapper for FeeConfig.
+///
+/// Soroban's `#[contracttype]` macro does not support `Option<T>` when `T`
+/// is itself a `#[contracttype]` struct (because structs implement `TryFrom`
+/// rather than `From` for `ScVal`). Using an enum is the idiomatic pattern.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MaybeFeeConfig {
+    None,
+    Some(FeeConfig),
+}
+
+impl MaybeFeeConfig {
+    pub fn as_option(&self) -> Option<&FeeConfig> {
+        match self {
+            MaybeFeeConfig::Some(ref c) => Some(c),
+            MaybeFeeConfig::None => None,
+        }
+    }
+
+    pub fn into_option(self) -> Option<FeeConfig> {
+        match self {
+            MaybeFeeConfig::Some(c) => Some(c),
+            MaybeFeeConfig::None => None,
+        }
+    }
+}
+
+impl From<Option<FeeConfig>> for MaybeFeeConfig {
+    fn from(opt: Option<FeeConfig>) -> Self {
+        match opt {
+            Some(c) => MaybeFeeConfig::Some(c),
+            None => MaybeFeeConfig::None,
+        }
+    }
 }
 
 #[contracttype]
@@ -32,6 +82,17 @@ pub struct Merchant {
     pub created_at: u64,
     pub suspension_reason: Option<String>,
     pub suspended_at: Option<u64>,
+    pub suspension_expires_at: Option<u64>,
+    pub oracle_signature: Option<String>,
+    pub last_payout_change_at: Option<u64>,
+    /// Custom fee configuration for this merchant.
+    pub fee_config: MaybeFeeConfig,
+    /// IPFS hash for content-addressable merchant metadata (issue #208)
+    pub metadata_hash: Option<String>,
+    /// Multi-currency payout addresses mapping (issue #216)
+    pub currency_payout_addresses: Map<String, Address>,
+    /// Whitelist of approved payout addresses (issue #210)
+    pub payout_whitelist: Vec<Address>,
 }
 
 #[contracttype]
@@ -65,9 +126,13 @@ pub enum MerchantError {
     Unauthorized = 3,
     NotVerified = 4,
     AdminAlreadySet = 5,
+    PayoutAddressNotWhitelisted = 6,
 }
 
-#[contractimpl]
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), feature = "contract-merchant-registry"),
+    contractimpl
+)]
 #[allow(deprecated)] // events::publish — migrate to #[contractevent] in a follow-up
 impl MerchantRegistry {
     pub fn version() -> u32 {
@@ -93,6 +158,7 @@ impl MerchantRegistry {
         settlement_currency: String,
         payout_address: Option<Address>,
         bank_account: Option<String>,
+        fee_config: Option<FeeConfig>,
     ) -> Result<(), MerchantError> {
         merchant_id.require_auth();
 
@@ -115,6 +181,10 @@ impl MerchantRegistry {
             created_at: env.ledger().timestamp(),
             suspension_reason: None,
             suspended_at: None,
+            fee_config: MaybeFeeConfig::from(fee_config),
+            metadata_hash: None,
+            currency_payout_addresses: map![&env],
+            payout_whitelist: vec![&env],
         };
 
         env.storage()
@@ -135,6 +205,7 @@ impl MerchantRegistry {
         active: Option<bool>,
         payout_address: Option<Address>,
         bank_account: Option<String>,
+        fee_config: Option<FeeConfig>,
     ) -> Result<(), MerchantError> {
         merchant_id.require_auth();
 
@@ -150,10 +221,37 @@ impl MerchantRegistry {
             merchant.active = is_active;
         }
         if let Some(addr) = payout_address {
+            // Validate against whitelist if whitelist is not empty (issue #210)
+            if !merchant.payout_whitelist.is_empty() {
+                let mut is_whitelisted = false;
+                for whitelisted_addr in merchant.payout_whitelist.iter() {
+                    if whitelisted_addr == addr {
+                        is_whitelisted = true;
+                        break;
+                    }
+                }
+                if !is_whitelisted {
+                    return Err(MerchantError::PayoutAddressNotWhitelisted);
+                }
+            }
+            
+            // Enforce 48-hour delay on payout address changes (issue #212)
+            let current_time = env.ledger().timestamp();
+            let forty_eight_hours = 48 * 60 * 60; // 48 hours in seconds
+            if let Some(last_change_time) = merchant.last_payout_change_at {
+                if current_time < last_change_time + forty_eight_hours {
+                    return Err(MerchantError::Unauthorized); // Reuse Unauthorized error or create new one
+                }
+            }
+            
             merchant.payout_address = Some(addr);
+            merchant.last_payout_change_at = Some(current_time);
         }
         if let Some(acct) = bank_account {
             merchant.bank_account = Some(acct);
+        }
+        if let Some(config) = fee_config {
+            merchant.fee_config = MaybeFeeConfig::Some(config);
         }
 
         env.storage()
@@ -169,16 +267,25 @@ impl MerchantRegistry {
     }
 
     /// Get merchant info
+    /// 
+    /// This function automatically reinstates merchants whose suspension has expired.
     pub fn get_merchant(env: Env, merchant_id: Address) -> Result<Merchant, MerchantError> {
-        Self::get_merchant_internal(&env, &merchant_id)
+        Self::get_merchant_internal(&env, &merchant_id);
     }
 
     /// Verify merchant (admin only) — sets KycTier::Basic for backward compatibility.
     /// If a RefundManager address is configured, also grants the MERCHANT role there.
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `admin` - The admin address
+    /// * `merchant_id` - The merchant address to verify
+    /// * `oracle_signature` - Optional oracle signature for KYC verification
     pub fn verify_merchant(
         env: Env,
         admin: Address,
         merchant_id: Address,
+        oracle_signature: Option<String>,
     ) -> Result<(), MerchantError> {
         admin.require_auth();
 
@@ -194,6 +301,11 @@ impl MerchantRegistry {
 
         let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
         merchant.kyc_tier = KycTier::Basic;
+        
+        // Store oracle signature if provided
+        if let Some(signature) = oracle_signature {
+            merchant.oracle_signature = Some(signature);
+        }
 
         env.storage()
             .persistent()
@@ -218,11 +330,19 @@ impl MerchantRegistry {
     }
 
     /// Set a specific KYC tier for a merchant (admin only).
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `admin` - The admin address
+    /// * `merchant_id` - The merchant address to update
+    /// * `tier` - The KYC tier to set
+    /// * `oracle_signature` - Optional oracle signature for KYC verification
     pub fn set_kyc_tier(
         env: Env,
         admin: Address,
         merchant_id: Address,
         tier: KycTier,
+        oracle_signature: Option<String>,
     ) -> Result<(), MerchantError> {
         admin.require_auth();
 
@@ -238,6 +358,11 @@ impl MerchantRegistry {
 
         let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
         merchant.kyc_tier = tier;
+        
+        // Store oracle signature if provided
+        if let Some(signature) = oracle_signature {
+            merchant.oracle_signature = Some(signature);
+        }
 
         env.storage()
             .persistent()
@@ -272,11 +397,19 @@ impl MerchantRegistry {
     }
 
     /// Suspend a merchant (admin only)
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `admin` - The admin address
+    /// * `merchant_id` - The merchant address to suspend
+    /// * `reason` - The reason for suspension
+    /// * `expiration_duration` - Duration in seconds after which suspension auto-lifts
     pub fn suspend_merchant(
         env: Env,
         admin: Address,
         merchant_id: Address,
         reason: String,
+        expiration_duration: u64,
     ) -> Result<(), MerchantError> {
         admin.require_auth();
 
@@ -294,6 +427,7 @@ impl MerchantRegistry {
         merchant.active = false;
         merchant.suspension_reason = Some(reason);
         merchant.suspended_at = Some(env.ledger().timestamp());
+        merchant.suspension_expires_at = Some(env.ledger().timestamp() + expiration_duration);
 
         env.storage()
             .persistent()
@@ -311,6 +445,11 @@ impl MerchantRegistry {
     }
 
     /// Reinstate a suspended merchant (admin only)
+    /// 
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `admin` - The admin address
+    /// * `merchant_id` - The merchant address to reinstate
     pub fn reinstate_merchant(
         env: Env,
         admin: Address,
@@ -332,6 +471,7 @@ impl MerchantRegistry {
         merchant.active = true;
         merchant.suspension_reason = None;
         merchant.suspended_at = None;
+        merchant.suspension_expires_at = None;
 
         env.storage()
             .persistent()
@@ -457,10 +597,282 @@ impl MerchantRegistry {
         }
     }
 
+    /// Calculate the platform fee for a given amount based on merchant's FeeConfig.
+    /// Returns (platform_fee, net_amount).
+    pub fn calculate_fee(
+        env: Env,
+        merchant_id: Address,
+        amount: i128,
+    ) -> Result<(i128, i128), MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        if let Some(config) = merchant.fee_config.as_option() {
+            if config.platform_fee_bps == 0 && config.fixed_fee == 0 {
+                return Ok((0, amount));
+            }
+
+            // Calculate percentage fee
+            let percentage_fee = (amount * (config.platform_fee_bps as i128)) / 10_000;
+
+            // Total fee is percentage + fixed
+            let total_fee = percentage_fee.saturating_add(config.fixed_fee);
+
+            // Ensure fee doesn't exceed amount
+            if total_fee >= amount {
+                return Ok((amount, 0));
+            }
+
+            let net_amount = amount.saturating_sub(total_fee);
+            Ok((total_fee, net_amount))
+        } else {
+            // No fee config, no fee
+            Ok((0, amount))
+        }
+    }
+
+    /// Get the fee recipient address for a merchant.
+    /// Returns the custom fee recipient if set, otherwise the admin address.
+    pub fn get_fee_recipient(env: Env, merchant_id: Address) -> Result<Address, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        if let MaybeFeeConfig::Some(config) = merchant.fee_config {
+            if let Some(recipient) = &config.fee_recipient {
+                return Ok(recipient.clone());
+            }
+        }
+
+        // Default to admin if no custom recipient
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&MerchantDataKey::Admin)
+            .ok_or(MerchantError::Unauthorized)?;
+
+        Ok(admin)
+    }
+
     fn get_merchant_internal(env: &Env, merchant_id: &Address) -> Result<Merchant, MerchantError> {
-        env.storage()
+        let mut merchant = env
+            .storage()
             .persistent()
             .get(&MerchantDataKey::Merchant(merchant_id.clone()))
-            .ok_or(MerchantError::MerchantNotFound)
+            .ok_or(MerchantError::MerchantNotFound)?;
+
+        // Auto-recover expired suspensions
+        if !merchant.active && merchant.suspension_expires_at.is_some() {
+            let current_time = env.ledger().timestamp();
+            if let Some(expiration_time) = merchant.suspension_expires_at {
+                if current_time >= expiration_time {
+                    // Auto-reinstate expired suspension
+                    merchant.active = true;
+                    merchant.suspension_reason = None;
+                    merchant.suspended_at = None;
+                    merchant.suspension_expires_at = None;
+
+                    // Save the updated merchant state
+                    env.storage()
+                        .persistent()
+                        .set(&MerchantDataKey::Merchant(merchant_id.clone()), &merchant);
+                }
+            }
+        }
+
+        Ok(merchant)
+    }
+
+    /// Set IPFS metadata hash for merchant profile (issue #208)
+    pub fn set_metadata_hash(
+        env: Env,
+        merchant_id: Address,
+        metadata_hash: String,
+    ) -> Result<(), MerchantError> {
+        merchant_id.require_auth();
+
+        let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        merchant.metadata_hash = Some(metadata_hash);
+
+        env.storage()
+            .persistent()
+            .set(&MerchantDataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "MERCHANT"),
+                Symbol::new(&env, "METADATA_UPDATED"),
+            ),
+            merchant_id,
+        );
+
+        Ok(())
+    }
+
+    /// Get IPFS metadata hash for merchant (issue #208)
+    pub fn get_metadata_hash(
+        env: Env,
+        merchant_id: Address,
+    ) -> Result<Option<String>, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        Ok(merchant.metadata_hash)
+    }
+
+    /// Add payout address for a specific currency (issue #216)
+    pub fn add_currency_payout(
+        env: Env,
+        merchant_id: Address,
+        currency: String,
+        payout_address: Address,
+    ) -> Result<(), MerchantError> {
+        merchant_id.require_auth();
+
+        let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        // Validate against whitelist if whitelist is not empty (issue #210)
+        if !merchant.payout_whitelist.is_empty() {
+            let mut is_whitelisted = false;
+            for addr in merchant.payout_whitelist.iter() {
+                if addr == payout_address {
+                    is_whitelisted = true;
+                    break;
+                }
+            }
+            if !is_whitelisted {
+                return Err(MerchantError::PayoutAddressNotWhitelisted);
+            }
+        }
+
+        merchant
+            .currency_payout_addresses
+            .set(currency.clone(), payout_address.clone());
+
+        env.storage()
+            .persistent()
+            .set(&MerchantDataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "MERCHANT"),
+                Symbol::new(&env, "CURRENCY_PAYOUT_ADDED"),
+            ),
+            (merchant_id, currency, payout_address),
+        );
+
+        Ok(())
+    }
+
+    /// Get payout address for a specific currency (issue #216)
+    pub fn get_currency_payout(
+        env: Env,
+        merchant_id: Address,
+        currency: String,
+    ) -> Result<Option<Address>, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        Ok(merchant.currency_payout_addresses.get(currency))
+    }
+
+    /// Get all currency payout mappings for a merchant (issue #216)
+    pub fn get_all_currency_payouts(
+        env: Env,
+        merchant_id: Address,
+    ) -> Result<Map<String, Address>, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        Ok(merchant.currency_payout_addresses)
+    }
+
+    /// Add address to payout whitelist (issue #210)
+    pub fn add_to_whitelist(
+        env: Env,
+        merchant_id: Address,
+        payout_address: Address,
+    ) -> Result<(), MerchantError> {
+        merchant_id.require_auth();
+
+        let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        // Check if address is already in whitelist
+        let mut already_exists = false;
+        for addr in merchant.payout_whitelist.iter() {
+            if addr == payout_address {
+                already_exists = true;
+                break;
+            }
+        }
+
+        if !already_exists {
+            merchant.payout_whitelist.push_back(payout_address.clone());
+            env.storage()
+                .persistent()
+                .set(&MerchantDataKey::Merchant(merchant_id.clone()), &merchant);
+
+            env.events().publish(
+                (
+                    Symbol::new(&env, "MERCHANT"),
+                    Symbol::new(&env, "WHITELIST_ADDED"),
+                ),
+                (merchant_id, payout_address),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Remove address from payout whitelist (issue #210)
+    pub fn remove_from_whitelist(
+        env: Env,
+        merchant_id: Address,
+        payout_address: Address,
+    ) -> Result<(), MerchantError> {
+        merchant_id.require_auth();
+
+        let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        let mut new_whitelist = vec![&env];
+        for addr in merchant.payout_whitelist.iter() {
+            if addr != payout_address {
+                new_whitelist.push_back(addr);
+            }
+        }
+
+        merchant.payout_whitelist = new_whitelist;
+        env.storage()
+            .persistent()
+            .set(&MerchantDataKey::Merchant(merchant_id.clone()), &merchant);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "MERCHANT"),
+                Symbol::new(&env, "WHITELIST_REMOVED"),
+            ),
+            (merchant_id, payout_address),
+        );
+
+        Ok(())
+    }
+
+    /// Get payout whitelist for a merchant (issue #210)
+    pub fn get_whitelist(env: Env, merchant_id: Address) -> Result<Vec<Address>, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        Ok(merchant.payout_whitelist)
+    }
+
+    /// Validate if a payout address is whitelisted (issue #210)
+    pub fn is_address_whitelisted(
+        env: Env,
+        merchant_id: Address,
+        payout_address: Address,
+    ) -> Result<bool, MerchantError> {
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+
+        // If whitelist is empty, all addresses are allowed
+        if merchant.payout_whitelist.is_empty() {
+            return Ok(true);
+        }
+
+        for addr in merchant.payout_whitelist.iter() {
+            if addr == payout_address {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }

@@ -55,6 +55,7 @@ fn test_happy_path_flow() {
         &String::from_str(&env, "USD"),
         &None::<Address>,
         &None::<String>,
+        &None,
     );
     merchant_client.verify_merchant(&admin, &merchant);
     let merchant_info = merchant_client.get_merchant(&merchant);
@@ -63,22 +64,23 @@ fn test_happy_path_flow() {
     // 2. Create and Verify Payment
     let payment_id = String::from_str(&env, "PAY_01");
     let amount = 1000i128;
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &Symbol::new(&env, "USDC"),
-        &Address::generate(&env),
-        &Some(expires_at),
-                &None::<u64>,
-                &None::<String>,
-        &None::<String>,
-        &None::<Address>,
-    &None::<String>,
-    );
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
 
     let tx_hash = BytesN::<32>::random(&env);
     let oracle = Address::generate(&env);
@@ -108,6 +110,7 @@ fn test_happy_path_flow() {
         &operator,
         &dispute_id,
         &String::from_str(&env, "Refund approved"),
+        &String::from_str(&env, "base64sig=="),
     );
 
     let dispute_info = refund_client.get_dispute(&dispute_id);
@@ -134,19 +137,21 @@ fn test_settlement_path() {
     let payment_id = String::from_str(&env, "PAY_SETTLE");
     let amount = 2000i128;
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &Symbol::new(&env, "USDC"),
-        &Address::generate(&env),
-        &Some(env.ledger().timestamp() + 3600),
-                &None::<u64>,
-                &None::<String>,
-        &None::<String>,
-        &None::<Address>,
-    &None::<String>,
-    );
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
 
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
@@ -159,7 +164,13 @@ fn test_settlement_path() {
     );
 
     // Settle payment to treasury as a single split
-    let splits = vec![&env, SettlementSplit { recipient: treasury.clone(), amount }];
+    let splits = vec![
+        &env,
+        SettlementSplit {
+            recipient: treasury.clone(),
+            amount,
+        },
+    ];
     payment_client.settle_payment(&operator, &payment_id, &splits);
 
     let payment_info = payment_client.get_payment(&payment_id);
@@ -179,19 +190,21 @@ fn test_failure_and_expiration_path() {
     let expires_at = env.ledger().timestamp() + 100;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &Symbol::new(&env, "USDC"),
-        &Address::generate(&env),
-        &Some(expires_at),
-                &None::<u64>,
-                &None::<String>,
-        &None::<String>,
-        &None::<Address>,
-    &None::<String>,
-    );
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(expires_at),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
 
     // Jump forward in time
     env.ledger().set_timestamp(expires_at + 1);
@@ -224,6 +237,7 @@ fn test_failure_and_expiration_path() {
         &operator,
         &dispute_id,
         &String::from_str(&env, "Payment already expired and cancelled"),
+        &String::from_str(&env, "base64sig=="),
     );
 
     let dispute_info = refund_client.get_dispute(&dispute_id);

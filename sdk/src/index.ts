@@ -8,23 +8,55 @@ import {
   RefundStatus,
   DisputeStatus,
 } from "./contracts/fluxapay/src/index.js";
-import { Address, Networks } from "@stellar/stellar-sdk";
+import { Networks } from "@stellar/stellar-sdk";
+import {
+  FluxapayOfflineSigner,
+  OfflineTransactionPayload,
+  buildOfflinePayload,
+  buildCreatePaymentPayload,
+  buildVerifyPaymentPayload,
+  buildCreateRefundPayload,
+  prepareForOfflineSigning,
+  restoreFromOfflinePayload,
+} from "./offline-signer.js";
+import { NetworkProfileSwitcher, NetworkEnvironment, NetworkProfiles, NetworkProfile } from "./network-profiles.js";
 
 export interface FluxapayConfig {
-  network: "testnet" | "mainnet";
-  rpcUrl: string;
+  network: NetworkEnvironment;
+  rpcUrl?: string;
   contractId: string;
 }
 
 export class FluxapayClient {
   public contract: ContractClient;
+  public networkSwitcher: NetworkProfileSwitcher;
 
   constructor(config: FluxapayConfig) {
+    this.networkSwitcher = new NetworkProfileSwitcher(config.network);
+    
+    // Override RPC URL if provided, otherwise use the default for the profile
+    const rpcUrl = config.rpcUrl || this.networkSwitcher.getProfile().rpcUrl;
+    
     this.contract = new ContractClient({
-      networkPassphrase:
-        config.network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET,
-      rpcUrl: config.rpcUrl,
+      networkPassphrase: this.networkSwitcher.getProfile().networkPassphrase,
+      rpcUrl: rpcUrl,
       contractId: config.contractId,
+    });
+  }
+
+  /**
+   * Switch the client to a different network environment.
+   * This re-initializes the contract client seamlessly.
+   */
+  public switchNetwork(environment: NetworkEnvironment, contractId?: string): void {
+    this.networkSwitcher.switchEnvironment(environment);
+    const profile = this.networkSwitcher.getProfile();
+    const newContractId = contractId || profile.defaultContractId || this.contract.options.contractId;
+    
+    this.contract = new ContractClient({
+      networkPassphrase: profile.networkPassphrase,
+      rpcUrl: profile.rpcUrl,
+      contractId: newContractId,
     });
   }
 
@@ -100,6 +132,15 @@ export class FluxapayClient {
   async getPayment(paymentId: string) {
     return this.contract.get_payment({ payment_id: paymentId });
   }
+
+  /** Offline/hardware wallet payload builder utilities. */
+  offlineSigner(): FluxapayOfflineSigner {
+    return new FluxapayOfflineSigner(
+      this.contract as import("./offline-signer.js").OfflineCapableClient,
+      this.contract.options.contractId,
+      this.contract.options.networkPassphrase,
+    );
+  }
 }
 
 export {
@@ -110,4 +151,16 @@ export {
   PaymentStatus,
   RefundStatus,
   DisputeStatus,
+  FluxapayOfflineSigner,
+  OfflineTransactionPayload,
+  buildOfflinePayload,
+  buildCreatePaymentPayload,
+  buildVerifyPaymentPayload,
+  buildCreateRefundPayload,
+  prepareForOfflineSigning,
+  restoreFromOfflinePayload,
+  NetworkProfileSwitcher,
+  NetworkEnvironment,
+  NetworkProfiles,
+  NetworkProfile,
 };

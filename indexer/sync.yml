@@ -1,0 +1,56 @@
+# Mercury Indexer Sync Configuration
+# Issue: #233 - Mercury Indexer Sync Configs
+# Description: DB sync configuration profiles and quick mappings support
+
+sync_profiles:
+  - name: testnet_quick_sync
+    network: testnet
+    rpc_url: "https://soroban-testnet.stellar.org"
+    db_connection: "postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:5432/fluxapay_testnet"
+    sync_mode: "quick" # Supports quick mappings
+    batch_size: 1000
+    retry_limit: 5
+
+  - name: mainnet_full_sync
+    network: mainnet
+    rpc_url: "https://soroban-rpc.stellar.org"
+    db_connection: "postgres://${DB_USER}:${DB_PASS}@${DB_HOST}:5432/fluxapay_mainnet"
+    sync_mode: "full"
+    batch_size: 500
+    retry_limit: 10
+
+  - name: sandbox_local
+    network: standalone
+    rpc_url: "http://localhost:8000/soroban/rpc"
+    db_connection: "postgres://${DB_USER}:${DB_PASS}@localhost:5432/fluxapay_local"
+    sync_mode: "quick" # Supports quick mappings
+    batch_size: 100
+    retry_limit: 3
+
+mappings:
+  quick_mappings:
+    - contract: "payment_processor"
+      events:
+        - "payment_executed"
+        - "refund_issued"
+      tables:
+        - "payments"
+        - "refunds"
+    
+    - contract: "merchant_registry"
+      events:
+        - "merchant_registered"
+        - "merchant_suspended"
+      tables:
+        - "merchants"
+
+    - contract: "fx_oracle"
+      events:
+        - "rate_updated"
+      tables:
+        - "exchange_rates"
+
+settings:
+  log_level: "info"
+  auto_migrate_db: true
+  enable_quick_mappings: true

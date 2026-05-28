@@ -113,6 +113,8 @@ pub struct Dispute {
     pub review_deadline: Option<u64>,
     /// True when the dispute has been flagged for escalation (e.g. deadline exceeded).
     pub escalated: bool,
+    /// Multi-party payout splits for marketplace dispute resolution.
+    pub payout_splits: Vec<SettlementSplit>,
 }
 
 #[contracterror]
@@ -140,6 +142,7 @@ pub enum Error {
     InvalidExpiry = 23,
     InvalidSettlement = 24,
     DuplicateIdempotencyKey = 24,
+    CapExceeded = 25,
 }
 
 #[contracttype]
@@ -164,6 +167,21 @@ pub struct SettlementSplit {
     pub amount: i128,
 }
 
+/// Payer-defined subscription with an absolute spending cap.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Subscription {
+    pub subscription_id: String,
+    pub payer: Address,
+    pub merchant_id: Address,
+    pub amount: i128,
+    pub currency: Symbol,
+    /// Absolute maximum the merchant may charge per billing cycle.
+    /// If `Some(cap)`, any charge attempt exceeding `cap` is rejected.
+    pub max_allowable_cap: Option<i128>,
+    pub created_at: u64,
+}
+
 #[contracttype]
 pub enum DataKey {
     Payment(String),
@@ -182,6 +200,7 @@ pub enum DataKey {
     MerchantAmountLimits(Address),
     GlobalAmountLimits,
     IdempotencyKey(String),
+    Subscription(String),
 }
 
 const SHORT_LIVE_TTL: u32 = 120_960; // ~1 week at 5s/ledger
@@ -193,6 +212,8 @@ const CREATE_PAYMENT_MAX_PER_WINDOW: u32 = 30;
 pub const DEFAULT_PAYMENT_DURATION_SECS: u64 = 3_600;
 /// 1% refund fee in basis points (100 bps = 1%).
 const REFUND_FEE_BPS: i128 = 100;
+/// Gas stipend for refund operators: 10% of the collected fee (10 bps of refund amount).
+const GAS_STIPEND_BPS: i128 = 10;
 
 #[contractimpl]
 #[allow(deprecated)] // events::publish — migrate to #[contractevent] in a follow-up
@@ -404,7 +425,7 @@ impl RefundManager {
 
     fn process_refund_internal(
         env: &Env,
-        _operator: &Address,
+        operator: &Address,
         refund_id: String,
     ) -> Result<(), Error> {
         let mut refund = Self::get_refund_internal(env, &refund_id)?;
@@ -421,6 +442,8 @@ impl RefundManager {
         let token_client = token::TokenClient::new(env, &usdc_token_address);
 
         let fee = refund.amount * REFUND_FEE_BPS / 10_000;
+        let gas_stipend = refund.amount * GAS_STIPEND_BPS / 10_000;
+        let admin_fee = fee - gas_stipend;
         let net_amount = refund.amount - fee;
 
         let from = env.current_contract_address();
@@ -429,11 +452,17 @@ impl RefundManager {
             return Ok(());
         }
 
-        // Transfer fee to admin
-        if fee > 0 {
+        // Send gas stipend to the operator
+        if gas_stipend > 0 {
+            let operator_muxed: MuxedAddress = operator.into();
+            let _ = token_client.try_transfer(&from, &operator_muxed, &gas_stipend);
+        }
+
+        // Transfer remaining fee to admin
+        if admin_fee > 0 {
             if let Some(admin) = AccessControl::get_admin(env) {
                 let admin_muxed: MuxedAddress = (&admin).into();
-                let _ = token_client.try_transfer(&from, &admin_muxed, &fee);
+                let _ = token_client.try_transfer(&from, &admin_muxed, &admin_fee);
             }
         }
 
@@ -579,6 +608,7 @@ impl RefundManager {
         reason: String,
         evidence: String,
         disputer: Address,
+        payout_splits: Vec<SettlementSplit>,
     ) -> Result<String, Error> {
         disputer.require_auth();
 
@@ -646,6 +676,7 @@ impl RefundManager {
             resolution_notes: None,
             review_deadline: None,
             escalated: false,
+            payout_splits,
         };
 
         env.storage()
@@ -1591,7 +1622,23 @@ impl PaymentProcessor {
             return Err(Error::InvalidSettlement);
         }
 
-        // Verify split amounts are positive and total matches payment amount
+        // Calculate platform fee via MerchantRegistry if configured
+        let (platform_fee, fee_recipient) =
+            if let Some(registry_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+            {
+                let registry_client =
+                    crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_address);
+                registry_client.calculate_fee(&payment.amount)
+            } else {
+                (0i128, env.current_contract_address())
+            };
+
+        let net_amount = payment.amount - platform_fee;
+
+        // Verify split amounts are positive and total matches net amount after fee
         let mut total: i128 = 0;
         for split in splits.iter() {
             if split.amount <= 0 {
@@ -1599,8 +1646,22 @@ impl PaymentProcessor {
             }
             total = total.saturating_add(split.amount);
         }
-        if total != payment.amount {
+        if total != net_amount {
             return Err(Error::InvalidSettlement);
+        }
+
+        // Transfer platform fee to fee_recipient
+        if platform_fee > 0 {
+            if let Some(usdc_token_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::UsdcToken)
+            {
+                let token_client = token::TokenClient::new(&env, &usdc_token_address);
+                let from = env.current_contract_address();
+                let fee_muxed: MuxedAddress = (&fee_recipient).into();
+                let _ = token_client.try_transfer(&from, &fee_muxed, &platform_fee);
+            }
         }
 
         payment.status = PaymentStatus::Settled;
@@ -1619,6 +1680,59 @@ impl PaymentProcessor {
             (payment.merchant_id, payment.amount),
         );
 
+        Ok(())
+    }
+
+    /// Create a subscription with an optional payer-defined spending cap.
+    pub fn create_subscription(
+        env: Env,
+        subscription_id: String,
+        payer: Address,
+        merchant_id: Address,
+        amount: i128,
+        currency: Symbol,
+        max_allowable_cap: Option<i128>,
+    ) -> Result<Subscription, Error> {
+        payer.require_auth();
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+        let sub = Subscription {
+            subscription_id: subscription_id.clone(),
+            payer,
+            merchant_id,
+            amount,
+            currency,
+            max_allowable_cap,
+            created_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Subscription(subscription_id), &sub);
+        Ok(sub)
+    }
+
+    /// Charge a subscription. Reverts with `CapExceeded` if `charge_amount` exceeds `max_allowable_cap`.
+    pub fn charge_subscription(
+        env: Env,
+        merchant_id: Address,
+        subscription_id: String,
+        charge_amount: i128,
+    ) -> Result<(), Error> {
+        merchant_id.require_auth();
+        let sub: Subscription = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Subscription(subscription_id.clone()))
+            .ok_or(Error::PaymentNotFound)?;
+        if sub.merchant_id != merchant_id {
+            return Err(Error::Unauthorized);
+        }
+        if let Some(cap) = sub.max_allowable_cap {
+            if charge_amount > cap {
+                return Err(Error::CapExceeded);
+            }
+        }
         Ok(())
     }
 

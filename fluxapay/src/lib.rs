@@ -153,6 +153,8 @@ pub struct Dispute {
     pub review_deadline: Option<u64>,
     /// True when the dispute has been flagged for escalation (e.g. deadline exceeded).
     pub escalated: bool,
+    /// Multi-party payout splits for marketplace dispute resolution.
+    pub payout_splits: Vec<SettlementSplit>,
 }
 
 /// Arbitrator vote on a dispute resolution (Issue #178).
@@ -744,7 +746,7 @@ impl RefundManager {
 
     fn process_refund_internal(
         env: &Env,
-        _operator: &Address,
+        operator: &Address,
         refund_id: String,
     ) -> Result<(), Error> {
         let mut refund = Self::get_refund_internal(env, &refund_id)?;
@@ -822,7 +824,7 @@ impl RefundManager {
         if fee > 0 {
             if let Some(admin) = AccessControl::get_admin(env) {
                 let admin_muxed: MuxedAddress = (&admin).into();
-                let _ = token_client.try_transfer(&from, &admin_muxed, &fee);
+                let _ = token_client.try_transfer(&from, &admin_muxed, &admin_fee);
             }
         }
         env.events().publish(
@@ -1052,6 +1054,7 @@ impl RefundManager {
         reason: String,
         evidence: String,
         disputer: Address,
+        payout_splits: Vec<SettlementSplit>,
     ) -> Result<String, Error> {
         disputer.require_auth();
 
@@ -1119,6 +1122,7 @@ impl RefundManager {
             resolution_notes: None,
             review_deadline: None,
             escalated: false,
+            payout_splits,
         };
 
         env.storage()
@@ -3420,7 +3424,23 @@ impl PaymentProcessor {
             return Err(Error::InvalidSettlement);
         }
 
-        // Verify split amounts are positive and total matches payment amount
+        // Calculate platform fee via MerchantRegistry if configured
+        let (platform_fee, fee_recipient) =
+            if let Some(registry_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+            {
+                let registry_client =
+                    crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_address);
+                registry_client.calculate_fee(&payment.amount)
+            } else {
+                (0i128, env.current_contract_address())
+            };
+
+        let net_amount = payment.amount - platform_fee;
+
+        // Verify split amounts are positive and total matches net amount after fee
         let mut total: i128 = 0;
         for split in splits.iter() {
             if split.amount <= 0 {
@@ -3428,8 +3448,22 @@ impl PaymentProcessor {
             }
             total = total.saturating_add(split.amount);
         }
-        if total != payment.amount {
+        if total != net_amount {
             return Err(Error::InvalidSettlement);
+        }
+
+        // Transfer platform fee to fee_recipient
+        if platform_fee > 0 {
+            if let Some(usdc_token_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::UsdcToken)
+            {
+                let token_client = token::TokenClient::new(&env, &usdc_token_address);
+                let from = env.current_contract_address();
+                let fee_muxed: MuxedAddress = (&fee_recipient).into();
+                let _ = token_client.try_transfer(&from, &fee_muxed, &platform_fee);
+            }
         }
 
         payment.status = PaymentStatus::Settled;

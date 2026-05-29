@@ -25,6 +25,13 @@ const REFUND_FEE_BPS_BASIC: i128 = 100;     // 1.0% for Basic tier
 const REFUND_FEE_BPS_FULL: i128 = 80;       // 0.8% for Full tier
 const REFUND_FEE_BPS_BUSINESS: i128 = 50;   // 0.5% for Business tier
 
+// Issue #63: Monthly processing volume caps per KYC tier (in USDC stroops, 7 decimals)
+// Unverified: $500, Basic: $10,000, Full: $100,000, Business: unlimited (i128::MAX)
+const TIER_CAP_UNVERIFIED: i128 = 5_000_000_000;       // $500
+const TIER_CAP_BASIC: i128 = 100_000_000_000;           // $10,000
+const TIER_CAP_FULL: i128 = 1_000_000_000_000;          // $100,000
+const TIER_CAP_BUSINESS: i128 = i128::MAX;              // unlimited
+
 /// Maximum number of payment retries before a subscription is cancelled.
 pub const SUBSCRIPTION_MAX_RETRIES: u32 = 3;
 /// Spacing between retry attempts in seconds (2 days).
@@ -205,6 +212,8 @@ pub enum Error {
     InvalidResumeTimestamp = 32,
     /// Merchant authorization error (see MerchantAuthError for details).
     MerchantAuthError = 33,
+    /// Merchant has exceeded their KYC tier monthly processing volume cap.
+    TierVolumeLimitExceeded = 34,
     /// Refund requested before cooldown period elapsed.
     RefundCooldownNotElapsed = 34,
     /// Refund request has expired and cannot be processed.
@@ -474,6 +483,8 @@ pub enum DataKey {
     DisputeVote(String, Address),
     /// Tally of votes for a dispute
     DisputeVoteTally(String),
+    /// Monthly volume tracker: (merchant_id, month_epoch) → i128 cumulative amount
+    MerchantMonthlyVolume(Address, u32),
 }
 
 // When building for WASM deployment, only the active contract's #[contractimpl]
@@ -3234,6 +3245,11 @@ impl PaymentProcessor {
             PaymentStatus::PartiallyPaid
         };
 
+        // Issue #63: Enforce tier-based monthly volume cap before confirming payment.
+        if new_status == PaymentStatus::Confirmed || new_status == PaymentStatus::Overpaid {
+            Self::enforce_tier_volume_cap(&env, &payment.merchant_id, amount_received)?;
+        }
+
         payment.status = new_status.clone();
 
         env.storage()
@@ -3660,6 +3676,59 @@ impl PaymentProcessor {
             .persistent()
             .set(&DataKey::StreamCounter, &counter);
         counter
+    }
+
+    /// Enforce KYC tier monthly volume cap. Returns `TierVolumeLimitExceeded` if adding
+    /// `amount` would exceed the merchant's tier cap for the current calendar month.
+    /// On success, persists the updated cumulative volume.
+    fn enforce_tier_volume_cap(
+        env: &Env,
+        merchant_id: &Address,
+        amount: i128,
+    ) -> Result<(), Error> {
+        // Derive the monthly cap from the merchant's KYC tier (cross-contract if registry set).
+        let cap = if let Some(registry_address) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+        {
+            let registry_client =
+                crate::merchant_registry::MerchantRegistryClient::new(env, &registry_address);
+            match registry_client.try_get_merchant(merchant_id) {
+                Ok(Ok(merchant)) => {
+                    use crate::merchant_registry::KycTier;
+                    match merchant.kyc_tier {
+                        KycTier::Business => TIER_CAP_BUSINESS,
+                        KycTier::Full => TIER_CAP_FULL,
+                        KycTier::Basic => TIER_CAP_BASIC,
+                        KycTier::Unverified => TIER_CAP_UNVERIFIED,
+                    }
+                }
+                _ => TIER_CAP_UNVERIFIED,
+            }
+        } else {
+            TIER_CAP_BUSINESS // No registry → no cap
+        };
+
+        if cap == i128::MAX {
+            return Ok(()); // Business tier: unlimited
+        }
+
+        // Month epoch: seconds since Unix epoch / seconds-per-30-days, cast to u32.
+        let month_epoch = (env.ledger().timestamp() / 2_592_000) as u32;
+        let key = DataKey::MerchantMonthlyVolume(merchant_id.clone(), month_epoch);
+
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let new_total = current.saturating_add(amount);
+
+        if new_total > cap {
+            return Err(Error::TierVolumeLimitExceeded);
+        }
+
+        env.storage().persistent().set(&key, &new_total);
+        Self::bump_ttl(env, &key, LONG_LIVE_TTL);
+
+        Ok(())
     }
 
     fn get_payment_internal(env: &Env, payment_id: &String) -> Result<PaymentCharge, Error> {

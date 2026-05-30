@@ -821,3 +821,247 @@ fn test_settle_payment_no_registry_configured() {
     let payment = payment_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
+
+#[test]
+fn test_cross_contract_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    let merchant = Address::generate(&env);
+    let customer = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // Happy path: register merchant → verify merchant → create_payment → confirm payment → settle
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Flux Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+
+    let merchant_info = merchant_client.get_merchant(&merchant);
+    assert_eq!(merchant_info.kyc_tier, KycTier::Unverified);
+
+    merchant_client.verify_merchant(&admin, &merchant);
+    let verified_merchant = merchant_client.get_merchant(&merchant);
+    assert_eq!(verified_merchant.kyc_tier, KycTier::Basic);
+
+    // Now create payment with verified merchant
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let payment_id = String::from_str(&env, "PAY_CROSS_01");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    let result = payment_client.create_payment(&args);
+    assert!(result.is_ok());
+
+    let payment_info = payment_client.get_payment(&payment_id);
+    assert_eq!(payment_info.unwrap().status, PaymentStatus::Pending);
+
+    // Confirm payment
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    let tx_hash = BytesN::<32>::random(&env);
+    let result = payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
+    assert!(result.is_ok());
+
+    let confirmed = payment_client.get_payment(&payment_id);
+    assert_eq!(confirmed.unwrap().status, PaymentStatus::Confirmed);
+
+    // Settle payment
+    let splits = vec![
+        &env,
+        SettlementSplit {
+            recipient: merchant.clone(),
+            amount,
+        },
+    ];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let settled = payment_client.get_payment(&payment_id);
+    assert_eq!(settled.unwrap().status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_cross_contract_unverified_merchant_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    let merchant = Address::generate(&env);
+
+    // Register but don't verify merchant
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Flux Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+
+    // Try to create payment with unverified merchant
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let payment_id = String::from_str(&env, "PAY_UNVERIFIED");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+
+    // Creating payment with unverified merchant should fail
+    let result = payment_client.create_payment(&args);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cross_contract_suspended_merchant_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    let merchant = Address::generate(&env);
+
+    // Register and verify merchant
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Flux Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+    merchant_client.verify_merchant(&admin, &merchant);
+
+    // Suspend the merchant
+    merchant_client.suspend_merchant(
+        &admin,
+        &merchant,
+        &String::from_str(&env, "Suspicious activity"),
+        &None::<u64>,
+    );
+
+    // Try to create payment with suspended merchant
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let payment_id = String::from_str(&env, "PAY_SUSPENDED");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+
+    // Creating payment with suspended merchant should fail
+    let result = payment_client.create_payment(&args);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_cross_contract_registry_not_set_regression() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+
+    // Don't wire payment processor to merchant registry - regression test
+
+    let merchant = Address::generate(&env);
+    let customer = Address::generate(&env);
+
+    // Register merchant in merchant registry only
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Flux Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+
+    // Try to create payment without registry wired
+    // Should check merchant role, not merchant verification status
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let payment_id = String::from_str(&env, "PAY_NO_REG");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+
+    // Should succeed because merchant has MERCHANT role (registry check skipped)
+    let result = payment_client.create_payment(&args);
+    assert!(result.is_ok());
+
+    // Verify payment
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    let tx_hash = BytesN::<32>::random(&env);
+    let result = payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
+    assert!(result.is_ok());
+
+    let payment_info = payment_client.get_payment(&payment_id);
+    assert_eq!(payment_info.unwrap().status, PaymentStatus::Confirmed);
+}

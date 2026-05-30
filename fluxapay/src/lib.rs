@@ -32,6 +32,11 @@ const TIER_CAP_BASIC: i128 = 100_000_000_000;           // $10,000
 const TIER_CAP_FULL: i128 = 1_000_000_000_000;          // $100,000
 const TIER_CAP_BUSINESS: i128 = i128::MAX;              // unlimited
 
+// Issue #207: Cumulative volume thresholds for automatic KYC tier upgrades (in USDC stroops)
+const TIER_UPGRADE_THRESHOLD_BASIC: i128 = TIER_CAP_UNVERIFIED;      // $500 cumulative → Basic
+const TIER_UPGRADE_THRESHOLD_FULL: i128 = TIER_CAP_BASIC;             // $10,000 cumulative → Full
+const TIER_UPGRADE_THRESHOLD_BUSINESS: i128 = TIER_CAP_FULL;          // $100,000 cumulative → Business
+
 /// Maximum number of payment retries before a subscription is cancelled.
 pub const SUBSCRIPTION_MAX_RETRIES: u32 = 3;
 /// Spacing between retry attempts in seconds (2 days).
@@ -227,13 +232,13 @@ pub enum Error {
     /// Refund requested before cooldown period elapsed.
     RefundCooldownNotElapsed = 42,
     /// Refund request has expired and cannot be processed.
-    RefundExpired = 35,
+    RefundExpired = 36,
     /// Insufficient arbitrators available for voting.
-    InsufficientArbitrators = 36,
+    InsufficientArbitrators = 37,
     /// Voting threshold not met for dispute resolution.
-    ArbitrationVotingThresholdNotMet = 37,
+    ArbitrationVotingThresholdNotMet = 38,
     /// Fee proposal has not matured for the required 7 days.
-    FeeProposalNotReady = 38,
+    FeeProposalNotReady = 39,
     /// No active fee proposal found.
     NoFeeProposal = 39,
     /// Issue #180: Evidence field is not a valid IPFS multihash.
@@ -528,6 +533,7 @@ pub enum DataKey {
     CreationPaused,
     MerchantRegistryAddress,
     AllowedToken(Address),
+    Blacklisted(Address),
     MerchantAmountLimits(Address),
     GlobalAmountLimits,
     IdempotencyKey(String),
@@ -552,6 +558,8 @@ pub enum DataKey {
     FeeSplitConfig,
     /// Monthly volume tracker: (merchant_id, month_epoch) → i128 cumulative amount
     MerchantMonthlyVolume(Address, u32),
+    /// Cumulative all-time payment volume per merchant for KYC tier auto-upgrades (issue #207).
+    MerchantCumulativeVolume(Address),
     FeeProposal,
     CurrentFee,
     GlobalRateLimit,
@@ -629,6 +637,86 @@ impl RefundManager {
             .map_err(|_| Error::AccessControlError)
     }
 
+    /// Synchronize a role grant across PaymentProcessor and RefundManager.
+    ///
+    /// If either grant fails, the transaction aborts and no changes are persisted.
+    pub fn sync_grant_role_with_payment_processor(
+        env: Env,
+        admin: Address,
+        payment_processor_address: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        AccessControl::grant_role(&env, admin.clone(), role.clone(), account.clone())
+            .map_err(|_| Error::AccessControlError)?;
+
+        let payment_client = crate::PaymentProcessorClient::new(&env, &payment_processor_address);
+        payment_client
+            .try_grant_role(&admin, &role, &account)
+            .map_err(|_| Error::AccessControlError)?
+            .map_err(|_| Error::AccessControlError)?;
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "ACCESS_CONTROL"),
+                Symbol::new(&env, "SYNC_GRANT"),
+            ),
+            (role, account),
+        );
+
+        Ok(())
+    }
+
+    /// Synchronize a role revoke across PaymentProcessor and RefundManager.
+    ///
+    /// If either revoke fails, the transaction aborts and no changes are persisted.
+    pub fn sync_revoke_role_with_payment_processor(
+        env: Env,
+        admin: Address,
+        payment_processor_address: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        AccessControl::revoke_role(&env, admin.clone(), role.clone(), account.clone())
+            .map_err(|_| Error::AccessControlError)?;
+
+        let payment_client = crate::PaymentProcessorClient::new(&env, &payment_processor_address);
+        payment_client
+            .try_revoke_role(&admin, &role, &account)
+            .map_err(|_| Error::AccessControlError)?
+            .map_err(|_| Error::AccessControlError)?;
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "ACCESS_CONTROL"),
+                Symbol::new(&env, "SYNC_REVOKE"),
+            ),
+            (role, account),
+        );
+
+        Ok(())
+    }
+
+    pub fn revoke_role(
+        env: Env,
+        admin: Address,
+        role: Symbol,
+        account: Address,
+    ) -> Result<(), Error> {
+        AccessControl::revoke_role(&env, admin, role, account)
+            .map_err(|_| Error::AccessControlError)
+    }
+
     pub fn has_role(env: Env, role: Symbol, account: Address) -> bool {
         AccessControl::has_role(&env, &role, &account)
     }
@@ -648,6 +736,50 @@ impl RefundManager {
 
     pub fn get_admin(env: Env) -> Option<Address> {
         AccessControl::get_admin(&env)
+    }
+
+    /// Add an address to the global blacklist (admin only).
+    pub fn add_to_blacklist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Blacklisted(address), &true);
+        Ok(())
+    }
+
+    /// Remove an address from the global blacklist (admin only).
+    pub fn remove_from_blacklist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Blacklisted(address), &false);
+        Ok(())
+    }
+
+    /// Returns true when an address is globally blacklisted.
+    pub fn is_blacklisted(env: Env, address: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Blacklisted(address))
+            .unwrap_or(false)
+    }
+
+    fn require_not_blacklisted(env: &Env, address: &Address) -> Result<(), Error> {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Blacklisted(address.clone()))
+            .unwrap_or(false)
+        {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
     }
 
     /// Issue #168: Configure fee split destinations for refund fees.
@@ -796,9 +928,23 @@ impl RefundManager {
         refund_amount: i128,
         reason: String,
         requester: Address,
+    ) -> Result<String, Error> {
+        requester.require_auth();
+        Self::require_not_blacklisted(&env, &requester)?;
+        Self::create_refund_internal(&env, payment_id, refund_amount, reason, requester, None)
+    }
+
+    /// Create a refund request with optional receipt hash metadata.
+    pub fn create_refund_with_receipt(
+        env: Env,
+        payment_id: String,
+        refund_amount: i128,
+        reason: String,
+        requester: Address,
         receipt_hash: Option<BytesN<32>>,
     ) -> Result<String, Error> {
         requester.require_auth();
+        Self::require_not_blacklisted(&env, &requester)?;
         Self::create_refund_internal(&env, payment_id, refund_amount, reason, requester, receipt_hash)
     }
 
@@ -825,6 +971,8 @@ impl RefundManager {
         } else {
             return Err(Error::PaymentNotFound);
         };
+        Self::require_not_blacklisted(env, &payment.merchant_id)?;
+        Self::require_not_blacklisted(env, &requester)?;
 
         // Issue #76: Reject refunds unless payment.status == Confirmed
         if payment.status != PaymentStatus::Confirmed {
@@ -906,9 +1054,11 @@ impl RefundManager {
 
     pub fn process_refund(env: Env, operator: Address, refund_id: String) -> Result<(), Error> {
         operator.require_auth();
+        Self::require_not_blacklisted(&env, &operator)?;
         
         // Issue #171: Allow either operator OR customer (requester) to process approved refunds
         let refund = Self::get_refund_internal(&env, &refund_id)?;
+        Self::require_not_blacklisted(&env, &refund.requester)?;
         
         let has_settlement =
             AccessControl::has_role(&env, &role_settlement_operator(&env), &operator);
@@ -994,8 +1144,10 @@ impl RefundManager {
             // Payment was made via swap_and_pay, refund in original token
             if swap_path.len() >= 2 {
                 // Reverse the swap path for refund
-                let mut reverse_path = swap_path.clone();
-                reverse_path.reverse();
+                let mut reverse_path = Vec::new(&env);
+                for i in 0..swap_path.len() {
+                    reverse_path.push_back(swap_path.get(swap_path.len() - 1 - i).unwrap());
+                }
                 
                 // Use DEX to swap back to original token
                 // For now, we'll use a simple approach - in production this would call the DEX
@@ -1170,6 +1322,7 @@ impl RefundManager {
         registry_address: Address,
     ) -> Result<String, Error> {
         merchant_id.require_auth();
+        Self::require_not_blacklisted(&env, &merchant_id)?;
 
         // Verify merchant KYC tier is Full or Business via cross-contract call
         let registry_client =
@@ -1195,6 +1348,9 @@ impl RefundManager {
         if payment.merchant_id != merchant_id {
             return Err(Error::Unauthorized);
         }
+        if let Some(ref payer) = payment.payer_address {
+            Self::require_not_blacklisted(&env, payer)?;
+        }
         if payment.status != PaymentStatus::Confirmed {
             return Err(Error::PaymentAlreadyProcessed);
         }
@@ -1206,6 +1362,7 @@ impl RefundManager {
             refund_amount,
             reason,
             payment.payer_address.clone().ok_or(Error::Unauthorized)?,
+            None,
         )?;
 
         // Execute transfer immediately — no operator approval needed
@@ -2199,6 +2356,7 @@ impl RefundManager {
                 dispute.amount,
                 refund_reason,
                 dispute.disputer.clone(),
+                None,
             ) {
                 let _ = Self::process_refund_internal(&env, &operator, refund_id);
             }
@@ -2357,8 +2515,8 @@ impl RefundManager {
             .get(&voters_key)
             .unwrap_or(vec![&env]);
 
-        if voters.len() < ARBITRATOR_VOTING_THRESHOLD as usize {
-            return Ok(false); // Threshold not met
+        if voters.len() < ARBITRATOR_VOTING_THRESHOLD {
+            return Err(Error::ArbitrationVotingThresholdNotMet);
         }
 
         // Count approvals
@@ -2835,8 +2993,8 @@ impl RefundManager {
                         Symbol::new(&env, "CANCELLED"),
                     ),
                     (
-                        subscription_id,
-                        payer,
+                        subscription_id.clone(),
+                        payer.clone(),
                         subscription.retry_count,
                     ),
                 );
@@ -3228,9 +3386,7 @@ impl PaymentProcessor {
             timestamp: env.ledger().timestamp(),
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::CreationPaused, &state);
+        env.storage().persistent().set(&DataKey::CreationPaused, &state);
 
         let event_name = if paused {
             Symbol::new(&env, "CREATION_PAUSED")
@@ -3448,6 +3604,49 @@ impl PaymentProcessor {
         Ok(())
     }
 
+    /// Add an address to the global blacklist (admin only).
+    pub fn add_to_blacklist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Blacklisted(address), &true);
+        Ok(())
+    }
+
+    /// Remove an address from the global blacklist (admin only).
+    pub fn remove_from_blacklist(env: Env, admin: Address, address: Address) -> Result<(), Error> {
+        admin.require_auth();
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Blacklisted(address), &false);
+        Ok(())
+    }
+
+    /// Returns true when an address is globally blacklisted.
+    pub fn is_blacklisted(env: Env, address: Address) -> bool {
+        Self::is_blacklisted_address(&env, &address)
+    }
+
+    fn is_blacklisted_address(env: &Env, address: &Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::Blacklisted(address.clone()))
+            .unwrap_or(false)
+    }
+
+    fn require_not_blacklisted(env: &Env, address: &Address) -> Result<(), Error> {
+        if Self::is_blacklisted_address(env, address) {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
     /// Returns true if the given token address is on the allowlist.
     pub fn is_token_allowed(env: Env, token_address: Address) -> bool {
         env.storage()
@@ -3460,6 +3659,8 @@ impl PaymentProcessor {
     pub fn create_payment(env: Env, args: CreatePaymentArgs) -> Result<PaymentCharge, Error> {
         Self::require_creation_not_paused(&env)?;
         args.merchant_id.require_auth();
+        Self::require_not_blacklisted(&env, &args.merchant_id)?;
+        Self::require_not_blacklisted(&env, &args.deposit_address)?;
 
         // Idempotency check: if client_token was already used, return the existing payment
         // (or error if it maps to a different payment_id).
@@ -3617,6 +3818,8 @@ impl PaymentProcessor {
         // Validate all payments first before creating any
         for args in args_list.iter() {
             args.merchant_id.require_auth();
+            Self::require_not_blacklisted(&env, &args.merchant_id)?;
+            Self::require_not_blacklisted(&env, &args.deposit_address)?;
 
             // Verify merchant role
             if !AccessControl::has_role(&env, &role_merchant(&env), &args.merchant_id) {
@@ -3780,12 +3983,15 @@ impl PaymentProcessor {
     ) -> Result<PaymentStatus, Error> {
         Self::require_not_paused(&env)?;
         oracle.require_auth();
+        Self::require_not_blacklisted(&env, &oracle)?;
+        Self::require_not_blacklisted(&env, &payer_address)?;
 
         if !AccessControl::has_role(&env, &role_oracle(&env), &oracle) {
             return Err(Error::Unauthorized);
         }
 
         let mut payment = Self::get_payment_internal(&env, &payment_id)?;
+        Self::require_not_blacklisted(&env, &payment.merchant_id)?;
 
         // Issue #75: Enforce idempotent verify_payment - reject double verification
         // If payment is already Confirmed, return current status without error
@@ -3832,7 +4038,7 @@ impl PaymentProcessor {
 
         let diff = amount_received - payment.amount;
 
-        let new_status = if (0..=tolerance).contains(&diff) {
+        let mut new_status = if (0..=tolerance).contains(&diff) {
             // Exact match or tiny overpay within tolerance → Confirmed
             PaymentStatus::Confirmed
         } else if diff > tolerance {
@@ -3845,6 +4051,36 @@ impl PaymentProcessor {
             // Meaningfully less than expected → PartiallyPaid
             PaymentStatus::PartiallyPaid
         };
+
+        // Issue #162: Merchant-configurable partial payment policy.
+        if new_status == PaymentStatus::PartiallyPaid {
+            let partial_allowed = if let Some(registry_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+            {
+                let registry_client =
+                    crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_address);
+                match registry_client.try_get_merchant(&payment.merchant_id) {
+                    Ok(Ok(merchant)) => merchant.partial_payment_allowed,
+                    _ => false,
+                }
+            } else {
+                false
+            };
+
+            if !partial_allowed {
+                new_status = PaymentStatus::Failed;
+                env.events().publish(
+                    (
+                        Symbol::new(&env, "REFUND"),
+                        Symbol::new(&env, "AUTO_REQUIRED"),
+                        payment.merchant_id.clone(),
+                    ),
+                    (payment_id.clone(), amount_received),
+                );
+            }
+        }
 
         // Issue #63: Enforce tier-based monthly volume cap before confirming payment.
         if new_status == PaymentStatus::Confirmed || new_status == PaymentStatus::Overpaid {
@@ -4021,19 +4257,17 @@ impl PaymentProcessor {
             return Err(Error::InvalidSettlement);
         }
 
-        // Calculate platform fee via MerchantRegistry if configured
-        let (platform_fee, fee_recipient) =
-            if let Some(registry_address) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
-            {
-                let registry_client =
-                    crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_address);
-                registry_client.calculate_fee(&payment.amount)
-            } else {
-                (0i128, env.current_contract_address())
-            };
+        let (platform_fee, fee_recipient) = if let Some(registry_address) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+        {
+            let registry_client =
+                crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_address);
+            registry_client.calculate_platform_fee(&payment.amount)
+        } else {
+            (0i128, env.current_contract_address())
+        };
 
         let net_amount = payment.amount - platform_fee;
 
@@ -4058,8 +4292,7 @@ impl PaymentProcessor {
             {
                 let token_client = token::TokenClient::new(&env, &usdc_token_address);
                 let from = env.current_contract_address();
-                let fee_muxed: MuxedAddress = (&fee_recipient).into();
-                let _ = token_client.try_transfer(&from, &fee_muxed, &platform_fee);
+                let _ = token_client.try_transfer(&from, &fee_recipient, &platform_fee);
             }
         }
 
@@ -4368,7 +4601,60 @@ impl PaymentProcessor {
         env.storage().persistent().set(&key, &new_total);
         Self::bump_ttl(env, &key, LONG_LIVE_TTL);
 
+        // Issue #207: Track cumulative volume and auto-upgrade KYC tier at milestones.
+        let cum_key = DataKey::MerchantCumulativeVolume(merchant_id.clone());
+        let cumulative: i128 = env.storage().persistent().get(&cum_key).unwrap_or(0);
+        let new_cumulative = cumulative.saturating_add(amount);
+        env.storage().persistent().set(&cum_key, &new_cumulative);
+        Self::bump_ttl(env, &cum_key, LONG_LIVE_TTL);
+        if let Some(registry_address) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+        {
+            Self::maybe_upgrade_kyc_tier(env, merchant_id, &registry_address, new_cumulative);
+        }
+
         Ok(())
+    }
+
+    /// Issue #207: Attempt to auto-upgrade a merchant's KYC tier based on cumulative volume.
+    /// Silently no-ops if the registry call fails (e.g. payment processor address not configured).
+    fn maybe_upgrade_kyc_tier(
+        env: &Env,
+        merchant_id: &Address,
+        registry_address: &Address,
+        cumulative_volume: i128,
+    ) {
+        use crate::merchant_registry::{KycTier, MerchantRegistryClient};
+        let registry_client = MerchantRegistryClient::new(env, registry_address);
+        let merchant = match registry_client.try_get_merchant(merchant_id) {
+            Ok(Ok(m)) => m,
+            _ => return,
+        };
+        let next_tier = match merchant.kyc_tier {
+            KycTier::Unverified if cumulative_volume >= TIER_UPGRADE_THRESHOLD_BASIC => {
+                KycTier::Basic
+            }
+            KycTier::Basic if cumulative_volume >= TIER_UPGRADE_THRESHOLD_FULL => KycTier::Full,
+            KycTier::Full if cumulative_volume >= TIER_UPGRADE_THRESHOLD_BUSINESS => {
+                KycTier::Business
+            }
+            _ => return,
+        };
+        if matches!(
+            registry_client.try_auto_upgrade_kyc_tier(
+                &env.current_contract_address(),
+                merchant_id,
+                &next_tier,
+            ),
+            Ok(Ok(()))
+        ) {
+            env.events().publish(
+                (Symbol::new(env, "KYC_TIER"), Symbol::new(env, "UPGRADED")),
+                (merchant_id.clone(), cumulative_volume),
+            );
+        }
     }
 
     fn get_payment_internal(env: &Env, payment_id: &String) -> Result<PaymentCharge, Error> {
@@ -4468,6 +4754,9 @@ impl PaymentProcessor {
     }
 
     pub fn cancel_stream(env: Env, sender: Address, stream_id: String) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &sender) {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::cancel_stream(env, sender, stream_id)
     }
     pub fn cancel_multiple_streams(
@@ -4475,6 +4764,9 @@ impl PaymentProcessor {
         sender: Address,
         stream_ids: Vec<String>,
     ) -> Result<Vec<String>, StreamError> {
+        if Self::is_blacklisted_address(&env, &sender) {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::cancel_multiple_streams(env, sender, stream_ids)
     }
 
@@ -4483,6 +4775,9 @@ impl PaymentProcessor {
         sender: Address,
         stream_ids: Vec<String>,
     ) -> Result<Vec<String>, StreamError> {
+        if Self::is_blacklisted_address(&env, &sender) {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::batch_cancel_streams(env, sender, stream_ids)
     }
 
@@ -4491,6 +4786,9 @@ impl PaymentProcessor {
         recipient: Address,
         withdrawals: Vec<WithdrawalRecipient>,
     ) -> Result<Vec<String>, StreamError> {
+        if Self::is_blacklisted_address(&env, &recipient) {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::batch_withdraw_to(env, recipient, withdrawals)
     }
 
@@ -4499,6 +4797,9 @@ impl PaymentProcessor {
         recipient: Address,
         max_streams: u32,
     ) -> Result<Vec<String>, StreamError> {
+        if Self::is_blacklisted_address(&env, &recipient) {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::withdraw_all_for_recipient(env, recipient, max_streams)
     }
 
@@ -4512,6 +4813,11 @@ impl PaymentProcessor {
         stream_id: String,
         destination: Address,
     ) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &recipient)
+            || Self::is_blacklisted_address(&env, &destination)
+        {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::set_stream_destination(env, recipient, stream_id, destination)
     }
 
@@ -4538,6 +4844,11 @@ impl PaymentProcessor {
         deposit: i128,
         stream_id: String,
     ) -> Result<PaymentStream, StreamError> {
+        if Self::is_blacklisted_address(&env, &sender)
+            || Self::is_blacklisted_address(&env, &receiver)
+        {
+            return Err(StreamError::Unauthorized);
+        }
         PaymentStreaming::create_stream(
             env,
             sender,

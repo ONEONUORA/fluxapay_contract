@@ -73,10 +73,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-deploy-${{ inputs.environment_name }}-
 
-      - name: Build contract (optimized)
-        working-directory: fluxapay
-        run: stellar contract build
-
       - name: Pre-deployment Checklist (Production Only)
         if: inputs.is_production
         run: |
@@ -87,37 +83,39 @@ jobs:
           echo "✓ Security review: Ensure no critical vulnerabilities"
           echo "✓ Code review: At least 2 team members approved PR"
           echo "==============================================="
-          
-          # Verify changelog exists and is recent
           if [ ! -f "CHANGELOG.md" ]; then
             echo "⚠️  WARNING: CHANGELOG.md not found!"
             exit 1
           fi
-          
-          # Check if tests passed in CI (this workflow runs after CI)
           echo "✓ All checks passed for production deployment"
 
-      - name: Deploy to Stellar ${{ inputs.stellar_network }}
+      - name: Deploy contracts via script
         id: deploy
         env:
           STELLAR_NETWORK: ${{ inputs.stellar_network }}
           STELLAR_SECRET_KEY: ${{ secrets.STELLAR_SECRET_KEY }}
         run: |
-          echo "Deploying fluxapay to Stellar ${{ inputs.stellar_network }}"
-          # Deploy and capture contract ID
-          CONTRACT_ID=$(stellar contract deploy \
-            --wasm target/wasm32-unknown-unknown/release/fluxapay.wasm \
-            --network ${{ inputs.stellar_network }} \
-            --source $STELLAR_SECRET_KEY)
-          echo "contract_id=$CONTRACT_ID" >> $GITHUB_OUTPUT
-          echo "Contract deployed successfully: $CONTRACT_ID"
+          bash scripts/deploy_testnet.sh
+          # Expose contract IDs to subsequent steps
+          source .env.testnet
+          echo "payment_processor_id=$PAYMENT_PROCESSOR_ID" >> $GITHUB_OUTPUT
+          echo "refund_manager_id=$REFUND_MANAGER_ID"       >> $GITHUB_OUTPUT
+          echo "merchant_registry_id=$MERCHANT_REGISTRY_ID" >> $GITHUB_OUTPUT
+          echo "fx_oracle_id=$FX_ORACLE_ID"                 >> $GITHUB_OUTPUT
+
+      - name: Upload .env.testnet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-testnet-${{ github.sha }}
+          path: .env.testnet
+          retention-days: ${{ inputs.retention_days }}
 
       - name: Generate TypeScript bindings
         id: generate_bindings
         run: |
-          echo "Generating bindings for contract ${{ steps.deploy.outputs.contract_id }}"
+          echo "Generating bindings for contract ${{ steps.deploy.outputs.payment_processor_id }}"
           stellar contract bindings typescript \
-            --contract-id ${{ steps.deploy.outputs.contract_id }} \
+            --contract-id ${{ steps.deploy.outputs.payment_processor_id }} \
             --output-dir bindings/ \
             --network ${{ inputs.stellar_network }} \
             --overwrite

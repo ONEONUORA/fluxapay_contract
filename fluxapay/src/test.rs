@@ -2116,3 +2116,106 @@ fn test_settle_payment_split_total_mismatch_fails() {
     let result = client.try_settle_payment(&operator, &payment_id, &splits);
     assert_eq!(result, Err(Ok(Error::InvalidSettlement)));
 }
+
+#[test]
+fn test_process_refund_reentrancy_guard_normal_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_refund_manager(&env);
+
+    let payment_id = String::from_str(&env, "payment_reentrancy_1");
+    let merchant_id = Address::generate(&env);
+    let refund_amount = 1000i128;
+    let requester = Address::generate(&env);
+
+    client.register_payment(
+        &payment_id,
+        &merchant_id,
+        &5000i128,
+        &Symbol::new(&env, "USDC"),
+    );
+
+    let refund_id = client.create_refund(
+        &payment_id,
+        &refund_amount,
+        &String::from_str(&env, "Reason"),
+        &requester,
+    );
+
+    let operator = Address::generate(&env);
+    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
+
+    client.process_refund(&operator, &refund_id);
+    let refund = client.get_refund(&refund_id);
+    assert_eq!(refund.status, RefundStatus::Completed);
+}
+
+#[test]
+fn test_process_refund_reentrancy_lock_cleared() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_refund_manager(&env);
+
+    let payment_id = String::from_str(&env, "payment_reentrancy_2");
+    let merchant_id = Address::generate(&env);
+    let refund_amount = 1000i128;
+    let requester = Address::generate(&env);
+
+    client.register_payment(
+        &payment_id,
+        &merchant_id,
+        &5000i128,
+        &Symbol::new(&env, "USDC"),
+    );
+
+    let refund_id_1 = client.create_refund(
+        &payment_id,
+        &refund_amount,
+        &String::from_str(&env, "Reason1"),
+        &requester,
+    );
+
+    let refund_id_2 = client.create_refund(
+        &payment_id,
+        &refund_amount,
+        &String::from_str(&env, "Reason2"),
+        &requester,
+    );
+
+    let operator = Address::generate(&env);
+    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
+
+    client.process_refund(&operator, &refund_id_1);
+    client.process_refund(&operator, &refund_id_2);
+
+    let refund1 = client.get_refund(&refund_id_1);
+    let refund2 = client.get_refund(&refund_id_2);
+    assert_eq!(refund1.status, RefundStatus::Completed);
+    assert_eq!(refund2.status, RefundStatus::Completed);
+}
+
+#[test]
+fn test_settle_payment_reentrancy_guard_normal_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_payment_processor(&env);
+
+    let payment_id = String::from_str(&env, "settle_reentrancy_1");
+    let amount = 1000i128;
+    make_confirmed_payment(&env, &client, &admin, &payment_id, amount);
+
+    let operator = Address::generate(&env);
+    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
+
+    let splits = vec![
+        &env,
+        SettlementSplit {
+            recipient: Address::generate(&env),
+            amount: 1000,
+        },
+    ];
+    client.settle_payment(&operator, &payment_id, &splits);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}

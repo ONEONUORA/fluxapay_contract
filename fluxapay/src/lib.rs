@@ -245,6 +245,8 @@ pub enum Error {
     InvalidEvidence = 40,
     /// Issue #185: One or both collaborative settlement signatures are invalid.
     InvalidSettlementSignature = 41,
+    /// Issue #313: Reentrancy detected in process_refund_internal or settle_payment.
+    Reentrancy = 43,
 }
 
 #[contracttype]
@@ -570,6 +572,8 @@ pub enum DataKey {
     MerchantPaymentCount(Address),
     /// Issue #185: Collaborative settlement record for a dispute.
     CollaborativeSettlement(String),
+    /// Issue #313: Reentrancy lock for process_refund_internal and settle_payment.
+    ReentrancyLock,
 }
 
 // When building for WASM deployment, only the active contract's #[contractimpl]
@@ -1073,11 +1077,37 @@ impl RefundManager {
         Self::process_refund_internal(&env, &operator, refund_id)
     }
 
+    struct ReentrancyGuard<'a> {
+        env: &'a Env,
+    }
+
+    impl<'a> Drop for ReentrancyGuard<'a> {
+        fn drop(&mut self) {
+            self.env
+                .storage()
+                .persistent()
+                .set(&DataKey::ReentrancyLock, &false);
+        }
+    }
+
     fn process_refund_internal(
         env: &Env,
         operator: &Address,
         refund_id: String,
     ) -> Result<(), Error> {
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::ReentrancyLock)
+            .unwrap_or(false)
+        {
+            return Err(Error::Reentrancy);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReentrancyLock, &true);
+        let _guard = ReentrancyGuard { env };
+
         let mut refund = Self::get_refund_internal(env, &refund_id)?;
 
         if refund.status != RefundStatus::Pending {
@@ -4246,6 +4276,19 @@ impl PaymentProcessor {
         if !AccessControl::has_role(&env, &role_settlement_operator(&env), &operator) {
             return Err(Error::Unauthorized);
         }
+
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::ReentrancyLock)
+            .unwrap_or(false)
+        {
+            return Err(Error::Reentrancy);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReentrancyLock, &true);
+        let _guard = ReentrancyGuard { env: &env };
 
         let mut payment = Self::get_payment_internal(&env, &payment_id)?;
 

@@ -243,3 +243,104 @@ fn test_failure_and_expiration_path() {
     let dispute_info = refund_client.get_dispute(&dispute_id);
     assert_eq!(dispute_info.status, DisputeStatus::Rejected);
 }
+
+#[test]
+fn test_upgrade_contract_payment_processor() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, _merchant_client) = setup_integration(&env);
+
+    let new_wasm_hash = BytesN::<32>::random(&env);
+
+    // Admin can upgrade
+    let result = payment_client.upgrade_contract(&admin, &new_wasm_hash);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_upgrade_contract_payment_processor_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, _merchant_client) = setup_integration(&env);
+    let non_admin = Address::generate(&env);
+
+    let new_wasm_hash = BytesN::<32>::random(&env);
+
+    // Non-admin cannot upgrade
+    let result = payment_client.upgrade_contract(&non_admin, &new_wasm_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_contract_refund_manager() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _payment_client, refund_client, _merchant_client) = setup_integration(&env);
+
+    let new_wasm_hash = BytesN::<32>::random(&env);
+
+    // Admin can upgrade
+    let result = refund_client.upgrade_contract(&admin, &new_wasm_hash);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_upgrade_contract_refund_manager_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _payment_client, refund_client, _merchant_client) = setup_integration(&env);
+    let non_admin = Address::generate(&env);
+
+    let new_wasm_hash = BytesN::<32>::random(&env);
+
+    // Non-admin cannot upgrade
+    let result = refund_client.upgrade_contract(&non_admin, &new_wasm_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_upgrade_contract_storage_compatibility() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, _merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+
+    // Create a payment before upgrade to test storage compatibility
+    let payment_id = String::from_str(&env, "PAY_UPGRADE");
+    let amount = 1000i128;
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    // Verify payment exists before upgrade
+    let payment_before = payment_client.get_payment(&payment_id);
+    assert_eq!(payment_before.amount, amount);
+
+    // Perform upgrade
+    let new_wasm_hash = BytesN::<32>::random(&env);
+    let result = payment_client.upgrade_contract(&admin, &new_wasm_hash);
+    assert!(result.is_ok());
+
+    // Verify payment still exists after upgrade (storage compatibility)
+    let payment_after = payment_client.get_payment(&payment_id);
+    assert_eq!(payment_after.amount, amount);
+}

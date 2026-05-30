@@ -11,6 +11,20 @@
 - `.github/workflows/deploy.yml`: replaced inline build and deploy steps with a call to `scripts/deploy_testnet.sh`; exposes all four contract IDs as step outputs; uploads `.env.testnet` as a workflow artifact
 
 ---
+## Unreleased
+
+### Added
+- Role management audit logging events: ROLE_GRANTED, ROLE_REVOKED, ADMIN_TRANSFER_PROPOSED, ADMIN_TRANSFER_COMPLETED, REVOCATION_PENDING, REVOCATION_CANCELLED, ROLE_RENOUNCED, PROPOSAL_CREATED, PROPOSAL_VOTED, RECOVERY_ADMIN_TRANSFER_PROPOSED
+- 24‑hour revocation cooldown periods for critical roles (ORACLE, SETTLEMENT_OPERATOR)
+- emergency_revoke_role for immediate revocation bypassing cooldown
+- finalize_revocation for completing revocation after cooldown
+- cancel_revocation for canceling pending revocation
+- get_pending_revocation to query pending revocation status
+- initialize_with_recovery and set_recovery_key for emergency recovery key management
+- recovery_initiate_admin_transfer for recovery‑initiated admin transfer with 30‑day lock‑in
+- Multi‑signature support for critical admin functions: create_proposal, vote_proposal, execute_proposal, get_proposal
+- set_multisig_config to update threshold and signer list
+- get_multisig_config to query current multi‑sig config
 
 ## Contract Versions
 

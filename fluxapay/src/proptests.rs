@@ -2,7 +2,7 @@ use crate::format_id;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger as _},
-    Address, BytesN, Env, String, Symbol,
+    Address, BytesN, Env, Symbol,
 };
 
 use crate::{
@@ -81,16 +81,22 @@ proptest! {
         let payment_id = format_id(&env, "exp_prop_", nonce);
         let expires_at = env.ledger().timestamp() + expires_in;
 
-        client.create_payment(
-            &payment_id,
-            &merchant,
-            &amount,
-            &Symbol::new(&env, "USDC"),
-            &Address::generate(&env),
-            &expires_at,
-            &None::<String>,
-            &None::<String>,
-        );
+        let args = crate::CreatePaymentArgs {
+            payment_id: payment_id.clone(),
+            merchant_id: merchant.clone(),
+            amount,
+            currency: Symbol::new(&env, "USDC"),
+            deposit_address: Address::generate(&env),
+            expires_at: Some(expires_at),
+            duration_secs: None,
+            memo: None,
+            memo_type: None,
+            token_address: None,
+            client_token: None,
+            metadata_hash: None,
+        };
+
+        client.create_payment(&args);
 
         env.ledger().set_timestamp(expires_at + after_expiry);
 
@@ -125,16 +131,22 @@ proptest! {
         let payment_id = format_id(&env, "amt_prop_", nonce);
         let expires_at = env.ledger().timestamp() + 3600;
 
-        client.create_payment(
-            &payment_id,
-            &merchant,
-            &amount,
-            &Symbol::new(&env, "USDC"),
-            &Address::generate(&env),
-            &expires_at,
-            &None::<String>,
-            &None::<String>,
-        );
+        let args = crate::CreatePaymentArgs {
+            payment_id: payment_id.clone(),
+            merchant_id: merchant.clone(),
+            amount,
+            currency: Symbol::new(&env, "USDC"),
+            deposit_address: Address::generate(&env),
+            expires_at: Some(expires_at),
+            duration_secs: None,
+            memo: None,
+            memo_type: None,
+            token_address: None,
+            client_token: None,
+            metadata_hash: None,
+        };
+
+        client.create_payment(&args);
 
         let status = client.verify_payment(
             &oracle,

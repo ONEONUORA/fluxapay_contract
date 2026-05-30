@@ -4,7 +4,7 @@ use crate::{
 };
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _},
-    token, Address, BytesN, Env, String, Symbol,
+    token, vec, Address, BytesN, Env, String, Symbol,
 };
 
 fn setup_contracts(env: &Env) -> (Address, PaymentProcessorClient<'_>, RefundManagerClient<'_>) {
@@ -27,6 +27,28 @@ fn setup_contracts(env: &Env) -> (Address, PaymentProcessorClient<'_>, RefundMan
     (admin, payment_client, refund_client)
 }
 
+fn create_payment_args(
+    env: &Env,
+    payment_id: &String,
+    merchant_id: &Address,
+    amount: i128,
+) -> crate::CreatePaymentArgs {
+    crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant_id.clone(),
+        amount,
+        currency: Symbol::new(env, "USDC"),
+        deposit_address: Address::generate(env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    }
+}
+
 #[test]
 fn test_create_dispute() {
     let env = Env::default();
@@ -39,24 +61,13 @@ fn test_create_dispute() {
     // Create and verify a payment
     let payment_id = String::from_str(&env, "payment_001");
     let amount = 1000i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
     // Verify payment
-    let transaction_hash = BytesN::<32>::random(&env);
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
@@ -69,7 +80,7 @@ fn test_create_dispute() {
     let evidence = String::from_str(&env, "Tracking shows delivery failed");
 
     let dispute_id =
-        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer);
+        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer, &vec![&env]);
 
     // Verify dispute was created
     let dispute: Dispute = refund_client.get_dispute(&dispute_id);
@@ -96,23 +107,12 @@ fn test_review_dispute() {
     // Create and verify payment
     let payment_id = String::from_str(&env, "payment_002");
     let amount = 500i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
-    let transaction_hash = BytesN::<32>::random(&env);
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
@@ -125,7 +125,7 @@ fn test_review_dispute() {
     let evidence = String::from_str(&env, "Photo evidence attached");
 
     let dispute_id =
-        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer);
+        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer, &vec![&env]);
 
     // Review dispute
     refund_client.review_dispute(&operator, &dispute_id);
@@ -152,23 +152,12 @@ fn test_resolve_dispute_with_refund() {
     // Create and verify payment
     let payment_id = String::from_str(&env, "payment_003");
     let amount = 750i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
-    let transaction_hash = BytesN::<32>::random(&env);
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
@@ -181,12 +170,17 @@ fn test_resolve_dispute_with_refund() {
     let evidence = String::from_str(&env, "Video evidence of defect");
 
     let dispute_id =
-        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer);
+        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer, &vec![&env]);
 
     // Resolve dispute with refund
     let resolution_notes = String::from_str(&env, "Dispute valid, issuing full refund");
-    let refund_id =
-        refund_client.resolve_dispute_with_refund(&operator, &dispute_id, &resolution_notes);
+    let operator_sig = String::from_str(&env, "base64sig==");
+    let refund_id = refund_client.resolve_dispute_with_refund(
+        &operator,
+        &dispute_id,
+        &resolution_notes,
+        &operator_sig,
+    );
 
     // Verify dispute was resolved
     let dispute: Dispute = refund_client.get_dispute(&dispute_id);
@@ -218,23 +212,12 @@ fn test_reject_dispute() {
     // Create and verify payment
     let payment_id = String::from_str(&env, "payment_004");
     let amount = 300i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
-    let transaction_hash = BytesN::<32>::random(&env);
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
@@ -247,11 +230,12 @@ fn test_reject_dispute() {
     let evidence = String::from_str(&env, "No evidence provided");
 
     let dispute_id =
-        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer);
+        refund_client.create_dispute(&payment_id, &amount, &dispute_reason, &evidence, &customer, &vec![&env]);
 
     // Reject dispute
     let resolution_notes = String::from_str(&env, "Insufficient evidence, dispute rejected");
-    refund_client.reject_dispute(&operator, &dispute_id, &resolution_notes);
+    let operator_sig = String::from_str(&env, "base64sig==");
+    refund_client.reject_dispute(&operator, &dispute_id, &resolution_notes, &operator_sig);
 
     // Verify dispute was rejected
     let dispute: Dispute = refund_client.get_dispute(&dispute_id);
@@ -272,23 +256,12 @@ fn test_get_payment_disputes() {
     // Create and verify payment
     let payment_id = String::from_str(&env, "payment_005");
     let amount = 1200i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
-    let transaction_hash = BytesN::<32>::random(&env);
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
@@ -303,6 +276,7 @@ fn test_get_payment_disputes() {
         &String::from_str(&env, "Partial refund needed"),
         &String::from_str(&env, "Evidence 1"),
         &customer,
+        &vec![&env],
     );
 
     let _dispute_id2 = refund_client.create_dispute(
@@ -311,6 +285,7 @@ fn test_get_payment_disputes() {
         &String::from_str(&env, "Additional dispute"),
         &String::from_str(&env, "Evidence 2"),
         &customer,
+        &vec![&env],
     );
 
     // Get all disputes for payment
@@ -331,21 +306,10 @@ fn test_dispute_invalid_amount() {
     // Create payment but don't verify it
     let payment_id = String::from_str(&env, "payment_006");
     let amount = 500i128;
-    let currency = Symbol::new(&env, "USDC");
-    let deposit_address = Address::generate(&env);
-    let expires_at = env.ledger().timestamp() + 3600;
 
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &currency,
-        &deposit_address,
-        &expires_at,
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
     // Try to create dispute with invalid amount - should fail
     refund_client.create_dispute(
@@ -354,13 +318,10 @@ fn test_dispute_invalid_amount() {
         &String::from_str(&env, "Dispute reason"),
         &String::from_str(&env, "Evidence"),
         &customer,
+        &vec![&env],
     );
 }
 
-/// Issue #26: verify that resolve_dispute_with_refund works with only the
-/// operator's auth — no disputer auth required in the invocation context.
-/// Uses mock_all_auths to confirm the internal path (create_refund_internal)
-/// does not call require_auth on the disputer.
 #[test]
 fn test_resolve_dispute_with_only_operator_auth() {
     let env = Env::default();
@@ -376,16 +337,8 @@ fn test_resolve_dispute_with_only_operator_auth() {
     let payment_id = String::from_str(&env, "pay_auth_test");
     let amount = 500i128;
     payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
-    payment_client.create_payment(
-        &payment_id,
-        &merchant,
-        &amount,
-        &Symbol::new(&env, "USDC"),
-        &merchant,
-        &(env.ledger().timestamp() + 3600),
-        &None::<String>,
-        &None::<String>,
-    );
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
 
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
@@ -401,6 +354,7 @@ fn test_resolve_dispute_with_only_operator_auth() {
         &String::from_str(&env, "Item not received"),
         &String::from_str(&env, "Tracking shows lost"),
         &customer,
+        &vec![&env],
     );
 
     // Resolve — the internal create_refund_internal must NOT call
@@ -409,6 +363,7 @@ fn test_resolve_dispute_with_only_operator_auth() {
         &operator,
         &dispute_id,
         &String::from_str(&env, "Refund approved"),
+        &String::from_str(&env, "base64sig=="),
     );
 
     // Verify the auth invocations: only the operator should have been required

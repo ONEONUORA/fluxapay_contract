@@ -3233,6 +3233,17 @@ impl RefundManager {
         let threshold = core::cmp::max(1, ttl / TTL_BUMP_THRESHOLD_DIVISOR);
         env.storage().persistent().extend_ttl(key, threshold, ttl);
     }
+
+    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        admin.require_auth();
+
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
 }
 
 #[cfg_attr(
@@ -4257,6 +4268,90 @@ impl PaymentProcessor {
             return Err(Error::InvalidSettlement);
         }
 
+        // Check if merchant registry is configured and merchant has FeeConfig
+        let registry_address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress);
+
+        if let Some(registry_addr) = registry_address {
+            let registry_client =
+                crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_addr);
+
+            // Try to get merchant and their fee config
+            if let Ok(merchant) = registry_client.get_merchant(&payment.merchant_id) {
+                if let Some(fee_config) = merchant.fee_config.as_option() {
+                    // Calculate fee using merchant's FeeConfig
+                    let fee_bps_amount = (payment.amount * (fee_config.platform_fee_bps as i128)) / 10_000;
+                    let fixed_fee = fee_config.fixed_fee;
+                    let total_merchant_fee = fee_bps_amount.saturating_add(fixed_fee);
+
+                    // Ensure fee doesn't exceed amount
+                    let actual_fee = if total_merchant_fee >= payment.amount {
+                        payment.amount
+                    } else {
+                        total_merchant_fee
+                    };
+
+                    let net_merchant_amount = payment.amount.saturating_sub(actual_fee);
+
+                    // Get fee recipient
+                    let fee_recipient = if let Some(custom_recipient) = &fee_config.fee_recipient {
+                        custom_recipient.clone()
+                    } else {
+                        // Default to admin if no custom recipient
+                        AccessControl::get_admin(&env).unwrap_or_else(|| env.current_contract_address())
+                    };
+
+                    // Transfer to USDC token if configured
+                    if let Some(usdc_token_address) = env
+                        .storage()
+                        .persistent()
+                        .get::<DataKey, Address>(&DataKey::UsdcToken)
+                    {
+                        let token_client = token::TokenClient::new(&env, &usdc_token_address);
+                        let from = env.current_contract_address();
+
+                        // Transfer net amount to merchant
+                        if net_merchant_amount > 0 {
+                            let _ = token_client.try_transfer(&from, &payment.merchant_id, &net_merchant_amount);
+                        }
+
+                        // Transfer fee to fee_recipient
+                        if actual_fee > 0 {
+                            let _ = token_client.try_transfer(&from, &fee_recipient, &actual_fee);
+                        }
+                    }
+
+                    // Emit FEE_COLLECTED event
+                    env.events().publish(
+                        (
+                            Symbol::new(&env, "PAYMENT"),
+                            Symbol::new(&env, "FEE_COLLECTED"),
+                        ),
+                        (
+                            payment_id.clone(),
+                            payment.merchant_id.clone(),
+                            payment.amount,
+                            fee_bps_amount,
+                            fixed_fee,
+                            net_merchant_amount,
+                            fee_recipient,
+                        ),
+                    );
+
+                    payment.status = PaymentStatus::Settled;
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Payment(payment_id.clone()), &payment);
+                    Self::bump_payment_ttl(&env, &payment_id, &payment.status);
+
+                    return Ok(());
+                }
+            }
+        }
+
+        // Original split-based settlement logic (no FeeConfig or no registry)
         let (platform_fee, fee_recipient) = if let Some(registry_address) = env
             .storage()
             .persistent()
@@ -4314,6 +4409,34 @@ impl PaymentProcessor {
         );
 
         Ok(())
+    }
+
+    pub fn prune_expired_payments(
+        env: Env,
+        operator: Address,
+        payment_ids: Vec<String>,
+    ) -> Result<u32, Error> {
+        operator.require_auth();
+
+        if !AccessControl::has_role(&env, &role_settlement_operator(&env), &operator) {
+            return Err(Error::Unauthorized);
+        }
+
+        let mut pruned_count: u32 = 0;
+        let current_timestamp = env.ledger().timestamp();
+
+        for payment_id in payment_ids.iter() {
+            if let Ok(payment) = Self::get_payment_internal(&env, &payment_id) {
+                if payment.status == PaymentStatus::Pending && payment.expires_at <= current_timestamp {
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Payment(payment_id.clone()));
+                    pruned_count = pruned_count.saturating_add(1);
+                }
+            }
+        }
+
+        Ok(pruned_count)
     }
 
     /// Validate DEX path quotes before executing a swap.
@@ -4896,6 +5019,17 @@ impl PaymentProcessor {
 
     pub fn get_stream_fee_bps(env: Env) -> i128 {
         PaymentStreaming::get_stream_fee_bps(env)
+    }
+
+    pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        admin.require_auth();
+
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 }
 

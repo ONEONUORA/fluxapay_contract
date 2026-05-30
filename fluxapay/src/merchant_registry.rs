@@ -270,7 +270,33 @@ impl MerchantRegistry {
     /// 
     /// This function automatically reinstates merchants whose suspension has expired.
     pub fn get_merchant(env: Env, merchant_id: Address) -> Result<Merchant, MerchantError> {
-        Self::get_merchant_internal(&env, &merchant_id);
+        let mut merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        merchant.bank_account = None;
+        Ok(merchant)
+    }
+
+    /// Get merchant bank account (restricted to admin or merchant)
+    pub fn get_bank_account(
+        env: Env,
+        caller: Address,
+        merchant_id: Address,
+    ) -> Result<Option<String>, MerchantError> {
+        caller.require_auth();
+
+        if caller != merchant_id {
+            let stored_admin: Address = env
+                .storage()
+                .persistent()
+                .get(&MerchantDataKey::Admin)
+                .ok_or(MerchantError::Unauthorized)?;
+
+            if caller != stored_admin {
+                return Err(MerchantError::Unauthorized);
+            }
+        }
+
+        let merchant = Self::get_merchant_internal(&env, &merchant_id)?;
+        Ok(merchant.bank_account)
     }
 
     /// Verify merchant (admin only) — sets KycTier::Basic for backward compatibility.
@@ -506,7 +532,8 @@ impl MerchantRegistry {
         let mut i = offset;
         while i < end {
             if let Some(merchant_id) = merchant_ids.get(i) {
-                if let Ok(merchant) = Self::get_merchant_internal(&env, &merchant_id) {
+                if let Ok(mut merchant) = Self::get_merchant_internal(&env, &merchant_id) {
+                    merchant.bank_account = None;
                     result.push_back(merchant);
                 }
             }
@@ -526,8 +553,9 @@ impl MerchantRegistry {
 
         let mut result = vec![&env];
         for merchant_id in merchant_ids.iter() {
-            if let Ok(merchant) = Self::get_merchant_internal(&env, &merchant_id) {
+            if let Ok(mut merchant) = Self::get_merchant_internal(&env, &merchant_id) {
                 if merchant.kyc_tier != KycTier::Unverified {
+                    merchant.bank_account = None;
                     result.push_back(merchant);
                 }
             }

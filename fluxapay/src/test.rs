@@ -2238,6 +2238,8 @@ fn setup_refund_manager_with_plan(
 
 #[test]
 fn test_subscription_added_to_active_index_on_subscribe() {
+}
+
 #[test]
 fn test_process_refund_reentrancy_guard_normal_flow() {
     let env = Env::default();

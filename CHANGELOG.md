@@ -14,6 +14,10 @@
 ## Unreleased
 
 ### Added
+- Propose-and-claim admin transfers with compatibility wrappers for existing admin handoff entry points
+- Payer-level payment creation rate limiting to reduce spam and abusive retries
+- Automatic pending refund creation for overpaid payments
+- Dispute bonding so disputes now stake a bond that is returned or collected during resolution
 - Role management audit logging events: ROLE_GRANTED, ROLE_REVOKED, ADMIN_TRANSFER_PROPOSED, ADMIN_TRANSFER_COMPLETED, REVOCATION_PENDING, REVOCATION_CANCELLED, ROLE_RENOUNCED, PROPOSAL_CREATED, PROPOSAL_VOTED, RECOVERY_ADMIN_TRANSFER_PROPOSED
 - 24‑hour revocation cooldown periods for critical roles (ORACLE, SETTLEMENT_OPERATOR)
 - emergency_revoke_role for immediate revocation bypassing cooldown

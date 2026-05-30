@@ -20,6 +20,8 @@ const REFUND_COOLDOWN_SECS: u64 = 300;
 const REFUND_EXPIRY_SECS: u64 = 30 * 24 * 60 * 60;
 /// Minimum number of arbitrators required for dispute resolution voting.
 const ARBITRATOR_VOTING_THRESHOLD: u32 = 3;
+/// Fixed dispute bond in the contract's stablecoin denomination.
+const DISPUTE_BOND_AMOUNT: i128 = 100_000;
 
 // Issue #167: Tiered refund fees based on merchant KYC tier
 const REFUND_FEE_BPS_BASIC: i128 = 100;     // 1.0% for Basic tier
@@ -164,6 +166,7 @@ pub enum DisputeStatus {
 pub struct Dispute {
     pub dispute_id: String,
     pub payment_id: String,
+    pub merchant_id: Address,
     pub refund_id: Option<String>,
     pub amount: i128,
     pub reason: String,
@@ -533,6 +536,19 @@ pub struct FeeProposal {
     pub proposed_at: u64,
 }
 
+struct ReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> Drop for ReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        self.env
+            .storage()
+            .persistent()
+            .set(&DataKey::ReentrancyLock, &false);
+    }
+}
+
 #[contracttype]
 pub enum DataKey {
     Payment(String),
@@ -581,6 +597,7 @@ pub enum DataKey {
     CurrentFee,
     GlobalRateLimit,
     MerchantSpecificRateLimit(Address),
+    PayerRateLimit(Address),
     /// Issue #184: Total disputes filed against a merchant (keyed by merchant address).
     MerchantDisputeCount(Address),
     /// Issue #184: Total confirmed payments registered for a merchant (keyed by merchant address).
@@ -744,13 +761,29 @@ impl RefundManager {
         AccessControl::renounce_role(&env, account, role).map_err(|_| Error::AccessControlError)
     }
 
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), Error> {
+        AccessControl::propose_admin(&env, current_admin, new_admin)
+            .map_err(|_| Error::AccessControlError)
+    }
+
+    pub fn claim_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        AccessControl::claim_admin(&env, new_admin).map_err(|_| Error::AccessControlError)
+    }
+
     pub fn transfer_admin(
         env: Env,
         current_admin: Address,
         new_admin: Address,
     ) -> Result<(), Error> {
-        AccessControl::transfer_admin(&env, current_admin, new_admin)
-            .map_err(|_| Error::AccessControlError)
+        Self::propose_admin(env, current_admin, new_admin)
+    }
+
+    pub fn accept_admin_transfer(env: Env, new_admin: Address) -> Result<(), Error> {
+        Self::claim_admin(env, new_admin)
     }
 
     pub fn get_admin(env: Env) -> Option<Address> {
@@ -943,6 +976,33 @@ impl RefundManager {
         }
     }
 
+    pub fn queue_auto_refund(
+        env: Env,
+        caller: Address,
+        registry_address: Address,
+        payment_id: String,
+        refund_amount: i128,
+        requester: Address,
+        reason: String,
+    ) -> Result<String, Error> {
+        caller.require_auth();
+
+        let registry_client = crate::merchant_registry::MerchantRegistryClient::new(
+            &env,
+            &registry_address,
+        );
+        let expected_caller = registry_client
+            .get_payment_processor_address()
+            .ok_or(Error::Unauthorized)?;
+
+        if caller != expected_caller {
+            return Err(Error::Unauthorized);
+        }
+
+        Self::require_not_blacklisted(&env, &requester)?;
+        Self::create_refund_internal(&env, payment_id, refund_amount, reason, requester, None)
+    }
+
     pub fn create_refund(
         env: Env,
         payment_id: String,
@@ -1092,19 +1152,6 @@ impl RefundManager {
         }
 
         Self::process_refund_internal(&env, &operator, refund_id)
-    }
-
-    struct ReentrancyGuard<'a> {
-        env: &'a Env,
-    }
-
-    impl<'a> Drop for ReentrancyGuard<'a> {
-        fn drop(&mut self) {
-            self.env
-                .storage()
-                .persistent()
-                .set(&DataKey::ReentrancyLock, &false);
-        }
     }
 
     fn process_refund_internal(
@@ -1578,6 +1625,31 @@ impl RefundManager {
             return Err(Error::InvalidAmount);
         }
 
+        payment.merchant_id.require_auth();
+        Self::require_not_blacklisted(&env, &disputer)?;
+        Self::require_not_blacklisted(&env, &payment.merchant_id)?;
+
+        let usdc_token_address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::UsdcToken)
+            .ok_or(Error::Unauthorized)?;
+        let token_client = token::TokenClient::new(&env, &usdc_token_address);
+        let contract_address = env.current_contract_address();
+
+        if token_client
+            .try_transfer(&disputer, &contract_address, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
+        if token_client
+            .try_transfer(&payment.merchant_id, &contract_address, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
+
         // Sum open disputes + prior refunds for the same payment_id
         let existing_disputes = Self::get_payment_disputes_internal(&env, &payment_id);
         let mut total_disputed: i128 = 0;
@@ -1618,6 +1690,7 @@ impl RefundManager {
         let dispute = Dispute {
             dispute_id: dispute_id.clone(),
             payment_id: payment_id.clone(),
+            merchant_id: payment.merchant_id.clone(),
             refund_id: None,
             amount,
             reason,
@@ -1861,6 +1934,28 @@ impl RefundManager {
         // Process the refund immediately
         Self::process_refund_internal(&env, &operator, refund_id.clone())?;
 
+        let usdc_token_address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::UsdcToken)
+            .ok_or(Error::Unauthorized)?;
+        let token_client = token::TokenClient::new(&env, &usdc_token_address);
+        let contract_address = env.current_contract_address();
+        let collector = AccessControl::get_admin(&env).unwrap_or_else(|| contract_address.clone());
+
+        if token_client
+            .try_transfer(&contract_address, &dispute.disputer, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
+        if token_client
+            .try_transfer(&contract_address, &collector, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
+
         let now = env.ledger().timestamp();
 
         // Persist operator note on-chain for full transparency.
@@ -1938,6 +2033,28 @@ impl RefundManager {
         }
 
         let now = env.ledger().timestamp();
+
+        let usdc_token_address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::UsdcToken)
+            .ok_or(Error::Unauthorized)?;
+        let token_client = token::TokenClient::new(&env, &usdc_token_address);
+        let contract_address = env.current_contract_address();
+        let collector = AccessControl::get_admin(&env).unwrap_or_else(|| contract_address.clone());
+
+        if token_client
+            .try_transfer(&contract_address, &dispute.merchant_id, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
+        if token_client
+            .try_transfer(&contract_address, &collector, &DISPUTE_BOND_AMOUNT)
+            .is_err()
+        {
+            return Err(Error::Unauthorized);
+        }
 
         // Persist operator note on-chain for full transparency.
         let note = DisputeOperatorNote {
@@ -3758,6 +3875,46 @@ impl PaymentProcessor {
         Ok(())
     }
 
+    fn enforce_create_payment_rate_limit_for_payer(env: &Env, payer: &Address) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+
+        let config: RateLimitConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GlobalRateLimit)
+            .unwrap_or(RateLimitConfig {
+                window_secs: CREATE_PAYMENT_WINDOW_SECS,
+                max_per_window: CREATE_PAYMENT_MAX_PER_WINDOW,
+            });
+
+        let key = DataKey::PayerRateLimit(payer.clone());
+
+        let mut state: MerchantCreateRateLimit = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(MerchantCreateRateLimit {
+                last_payment_at: now,
+                count: 0,
+            });
+
+        if now.saturating_sub(state.last_payment_at) >= config.window_secs {
+            state.count = 0;
+        }
+
+        if state.count >= config.max_per_window {
+            return Err(Error::RateLimitExceeded);
+        }
+
+        state.count = state.count.saturating_add(1);
+        state.last_payment_at = now;
+
+        env.storage().persistent().set(&key, &state);
+        Self::bump_ttl(env, &key, SHORT_LIVE_TTL);
+
+        Ok(())
+    }
+
     /// Set per-merchant min/max payment amount limits (merchant self-service).
     /// Pass None to clear a bound. Requires the caller to hold the MERCHANT role.
     pub fn set_merchant_amount_limits(
@@ -4405,7 +4562,7 @@ impl PaymentProcessor {
 
         // Record the actual amount received for reconciliation
         payment.amount_received = Some(amount_received);
-        payment.payer_address = Some(payer_address);
+        payment.payer_address = Some(payer_address.clone());
         payment.transaction_hash = Some(transaction_hash);
         payment.confirmed_at = Some(env.ledger().timestamp());
 
@@ -4445,6 +4602,12 @@ impl PaymentProcessor {
         } else {
             // Meaningfully less than expected → PartiallyPaid
             PaymentStatus::PartiallyPaid
+        };
+
+        let overpaid_refund_amount = if new_status == PaymentStatus::Overpaid {
+            Some(amount_received.saturating_sub(payment.amount))
+        } else {
+            None
         };
 
         // Issue #162: Merchant-configurable partial payment policy.
@@ -4510,6 +4673,42 @@ impl PaymentProcessor {
         }
 
         payment.status = new_status.clone();
+
+        if let Some(refund_amount) = overpaid_refund_amount {
+            if let Some(registry_address) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Address>(&DataKey::MerchantRegistryAddress)
+            {
+                let registry_client = crate::merchant_registry::MerchantRegistryClient::new(
+                    &env,
+                    &registry_address,
+                );
+
+                if let Some(refund_manager_address) = registry_client.get_refund_manager_address() {
+                    let refund_client = RefundManagerClient::new(&env, &refund_manager_address);
+                    refund_client.register_payment(
+                        &payment_id,
+                        &payment.merchant_id,
+                        &payment.amount,
+                        &payment.currency,
+                    );
+
+                    let auto_reason = String::from_str(&env, "Automatic refund for overpayment");
+                    refund_client
+                        .try_queue_auto_refund(
+                            &env.current_contract_address(),
+                            &registry_address,
+                            &payment_id,
+                            &refund_amount,
+                            &payer_address,
+                            &auto_reason,
+                        )
+                        .map_err(|_| Error::Unauthorized)?
+                        .map_err(|_| Error::Unauthorized)?;
+                }
+            }
+        }
 
         env.storage()
             .persistent()
@@ -4703,8 +4902,8 @@ impl PaymentProcessor {
                 crate::merchant_registry::MerchantRegistryClient::new(&env, &registry_addr);
 
             // Try to get merchant and their fee config
-            if let Ok(merchant) = registry_client.get_merchant(&payment.merchant_id) {
-                if let Some(fee_config) = merchant.fee_config.as_option() {
+            let merchant = registry_client.get_merchant(&payment.merchant_id);
+            if let Some(fee_config) = merchant.fee_config.as_option() {
                     // Calculate fee using merchant's FeeConfig
                     let fee_bps_amount = (payment.amount * (fee_config.platform_fee_bps as i128)) / 10_000;
                     let fixed_fee = fee_config.fixed_fee;
@@ -4720,7 +4919,7 @@ impl PaymentProcessor {
                     let net_merchant_amount = payment.amount.saturating_sub(actual_fee);
 
                     // Get fee recipient
-                    let fee_recipient = if let Some(custom_recipient) = &fee_config.fee_recipient {
+                    let fee_recipient: Address = if let Some(custom_recipient) = &fee_config.fee_recipient {
                         custom_recipient.clone()
                     } else {
                         // Default to admin if no custom recipient
@@ -4771,7 +4970,6 @@ impl PaymentProcessor {
                     Self::bump_payment_ttl(&env, &payment_id, &payment.status);
 
                     return Ok(());
-                }
             }
         }
 
@@ -4978,6 +5176,8 @@ impl PaymentProcessor {
         if args.amount <= 0 || args.amount_in <= 0 {
             return Err(Error::InvalidAmount);
         }
+
+        Self::enforce_create_payment_rate_limit_for_payer(&env, &args.payer)?;
 
         if args.amount_out_min < args.amount {
             return Err(Error::SwapPathInvalid);
@@ -5404,6 +5604,7 @@ impl PaymentProcessor {
             rate_per_second,
             deposit,
             stream_id,
+            None,
         )
     }
 

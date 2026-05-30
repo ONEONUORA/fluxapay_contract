@@ -471,6 +471,12 @@ impl MerchantRegistry {
         Ok(())
     }
 
+    pub fn get_refund_manager_address(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&MerchantDataKey::RefundManagerAddress)
+    }
+
     /// Set the PaymentProcessor contract address for automatic KYC tier upgrades (issue #207).
     pub fn set_payment_processor_address(
         env: Env,
@@ -494,6 +500,12 @@ impl MerchantRegistry {
             .set(&MerchantDataKey::PaymentProcessorAddress, &payment_processor);
 
         Ok(())
+    }
+
+    pub fn get_payment_processor_address(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&MerchantDataKey::PaymentProcessorAddress)
     }
 
     /// Automatically upgrade a merchant's KYC tier based on cumulative payment volume (issue #207).

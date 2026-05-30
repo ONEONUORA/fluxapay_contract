@@ -515,3 +515,309 @@ fn test_prune_expired_payments_empty_list() {
     let result = payment_client.prune_expired_payments(&operator, &payment_ids);
     assert_eq!(result.unwrap(), 0);
 }
+
+#[test]
+fn test_settle_payment_with_zero_merchant_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // Register merchant with zero fee
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Test Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+    merchant_client.verify_merchant(&admin, &merchant);
+    merchant_client.set_fee_config(&admin, &merchant, &0, &0, &None::<Address>);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    // Create and settle payment
+    let payment_id = String::from_str(&env, "PAY_ZERO_FEE");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    let customer = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &BytesN::<32>::random(&env), &customer, &amount);
+
+    // Settlement should work with registry and fee config
+    let splits = vec![&env, crate::SettlementSplit {
+        recipient: merchant.clone(),
+        amount,
+    }];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let payment = payment_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_settle_payment_with_bps_only_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // Register merchant with 5% BPS fee
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Test Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+    merchant_client.verify_merchant(&admin, &merchant);
+    merchant_client.set_fee_config(&admin, &merchant, &500, &0, &None::<Address>);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    // Create and settle payment
+    let payment_id = String::from_str(&env, "PAY_BPS_FEE");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    let customer = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &BytesN::<32>::random(&env), &customer, &amount);
+
+    // Settlement should work with registry and fee config
+    let splits = vec![&env, crate::SettlementSplit {
+        recipient: merchant.clone(),
+        amount,
+    }];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let payment = payment_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_settle_payment_with_fixed_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // Register merchant with fixed fee of 100
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Test Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+    merchant_client.verify_merchant(&admin, &merchant);
+    merchant_client.set_fee_config(&admin, &merchant, &0, &100, &None::<Address>);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    // Create and settle payment
+    let payment_id = String::from_str(&env, "PAY_FIXED_FEE");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    let customer = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &BytesN::<32>::random(&env), &customer, &amount);
+
+    // Settlement should work with registry and fee config
+    let splits = vec![&env, crate::SettlementSplit {
+        recipient: merchant.clone(),
+        amount,
+    }];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let payment = payment_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_settle_payment_with_combined_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // Register merchant with 2% BPS + 50 fixed fee
+    merchant_client.register_merchant(
+        &merchant,
+        &String::from_str(&env, "Test Merchant"),
+        &String::from_str(&env, "USD"),
+        &None::<Address>,
+        &None::<String>,
+        &None,
+    );
+    merchant_client.verify_merchant(&admin, &merchant);
+    merchant_client.set_fee_config(&admin, &merchant, &200, &50, &None::<Address>);
+
+    // Wire payment processor to merchant registry
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+
+    // Create and settle payment
+    let payment_id = String::from_str(&env, "PAY_COMBINED_FEE");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    let customer = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &BytesN::<32>::random(&env), &customer, &amount);
+
+    // Settlement should work with registry and fee config
+    let splits = vec![&env, crate::SettlementSplit {
+        recipient: merchant.clone(),
+        amount,
+    }];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let payment = payment_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}
+
+#[test]
+fn test_settle_payment_no_registry_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, _refund_client, _merchant_client) = setup_integration(&env);
+    let merchant = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    // No registry configured - existing behavior should work
+
+    let payment_id = String::from_str(&env, "PAY_NO_REGISTRY");
+    let amount = 1000i128;
+
+    let args = crate::CreatePaymentArgs {
+        payment_id: payment_id.clone(),
+        merchant_id: merchant.clone(),
+        amount,
+        currency: Symbol::new(&env, "USDC"),
+        deposit_address: Address::generate(&env),
+        expires_at: Some(env.ledger().timestamp() + 3600),
+        duration_secs: None,
+        memo: None,
+        memo_type: None,
+        token_address: None,
+        client_token: None,
+        metadata_hash: None,
+    };
+    payment_client.create_payment(&args);
+
+    let customer = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &BytesN::<32>::random(&env), &customer, &amount);
+
+    // Settlement with splits should work without registry
+    let splits = vec![&env, crate::SettlementSplit {
+        recipient: Address::generate(&env),
+        amount,
+    }];
+    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
+    assert!(result.is_ok());
+
+    let payment = payment_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.status, PaymentStatus::Settled);
+}

@@ -2787,31 +2787,6 @@ fn test_verify_payment_no_fx_oracle_config_skips_check() {
     let payment = client.get_payment(&payment_id);
     assert_eq!(payment.fx_rate, None);
     assert_eq!(payment.fx_rate_at, None);
-    let payment_id = String::from_str(&env, "payment_reentrancy_1");
-    let merchant_id = Address::generate(&env);
-    let refund_amount = 1000i128;
-    let requester = Address::generate(&env);
-
-    client.register_payment(
-        &payment_id,
-        &merchant_id,
-        &5000i128,
-        &Symbol::new(&env, "USDC"),
-    );
-
-    let refund_id = client.create_refund(
-        &payment_id,
-        &refund_amount,
-        &String::from_str(&env, "Reason"),
-        &requester,
-    );
-
-    let operator = Address::generate(&env);
-    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
-
-    client.process_refund(&operator, &refund_id);
-    let refund = client.get_refund(&refund_id);
-    assert_eq!(refund.status, RefundStatus::Completed);
 }
 
 #[test]

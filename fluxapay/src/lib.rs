@@ -269,6 +269,10 @@ pub enum Error {
     Reentrancy = 43,
     /// Treasury balance is smaller than the requested withdrawal amount.
     InsufficientTreasuryBalance = 46,
+    /// Issue #317: Payment link metadata has too many keys (> 20).
+    MetadataTooLarge = 46,
+    /// Issue #317: Payment link metadata value exceeds maximum length (> 256 chars).
+    MetadataValueTooLong = 47,
 }
 
 #[contracttype]
@@ -950,7 +954,7 @@ impl RefundManager {
                 payer_address: None,
                 transaction_hash: None,
                 created_at: env.ledger().timestamp(),
-                confirmed_at: None,
+                confirmed_at: Some(env.ledger().timestamp()),
                 expires_at: 0,
                 amount_received: None,
                 memo: None,
@@ -5612,6 +5616,20 @@ impl PaymentProcessor {
         }
         PaymentStreaming::cancel_stream(env, sender, stream_id)
     }
+
+    pub fn pause_stream(env: Env, sender: Address, stream_id: String) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &sender) {
+            return Err(StreamError::Unauthorized);
+        }
+        PaymentStreaming::pause_stream(env, sender, stream_id)
+    }
+
+    pub fn resume_stream(env: Env, sender: Address, stream_id: String) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &sender) {
+            return Err(StreamError::Unauthorized);
+        }
+        PaymentStreaming::resume_stream(env, sender, stream_id)
+    }
     pub fn cancel_multiple_streams(
         env: Env,
         sender: Address,
@@ -5714,6 +5732,18 @@ impl PaymentProcessor {
         )
     }
 
+    pub fn top_up_stream(
+        env: Env,
+        caller: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &caller) {
+            return Err(StreamError::Unauthorized);
+        }
+        PaymentStreaming::top_up_stream(env, caller, stream_id, amount)
+    }
+
     pub fn top_up_multiple_streams(
         env: Env,
         sender: Address,
@@ -5812,3 +5842,6 @@ pub use utils::validate_ipfs_multihash;
 
 pub mod gas_estimator;
 pub use gas_estimator::{CostEstimate, GasEstimator, GasEstimatorClient, Operation};
+
+#[cfg(test)]
+mod swap_test;

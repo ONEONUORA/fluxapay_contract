@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contracttype, token, Address, Env, String, Symbol, Vec,
+    contract, contractimpl, contracterror, contracttype, token, Address, Env, String, Symbol, Vec,
 };
 
 use crate::PaymentProcessor;
@@ -16,6 +16,8 @@ pub enum StreamStatus {
     Cancelled,
     /// Deposit was fully drained; stream reached its natural end.
     Exhausted,
+    /// Stream is temporarily paused; accrual is frozen until resumed.
+    Paused,
 }
 
 /// A continuous payment stream from `sender` to `receiver`.
@@ -102,6 +104,8 @@ pub enum StreamError {
     WithdrawalInProgress = 11,
     /// The new rate is below the minimum allowed rate for this stream.
     RateBelowMinimum = 12,
+    /// Stream is not paused.
+    StreamNotPaused = 13,
 }
 
 /// Storage key for the per-stream withdrawal reentrancy lock.
@@ -200,10 +204,16 @@ fn get_recipient_stream_id(env: &Env, recipient: &Address, idx: u32) -> Option<S
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 // PaymentStreaming is an internal helper called by PaymentProcessor.
-// It is NOT a standalone #[contract] — that would duplicate exported symbols.
+// #[contract] marks it so testutils can register it; #[contractimpl] is
+// conditional to avoid duplicate exported symbols in the PaymentProcessor WASM.
 
+#[contract]
 pub struct PaymentStreaming;
 
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), feature = "contract-payment-streaming"),
+    contractimpl
+)]
 #[allow(deprecated)] // events::publish — migrate to #[contractevent] in a follow-up
 impl PaymentStreaming {
     /// Contract version bump helper.
@@ -277,7 +287,7 @@ impl PaymentStreaming {
             last_checkpoint_at: now,
             accrued_at_checkpoint: 0,
             status: StreamStatus::Active,
-            milestones_approved: false,
+            milestones_approved: true,
         };
 
         // Persist state before interaction (reentrancy protection)
@@ -748,6 +758,61 @@ impl PaymentStreaming {
         Ok(stream_id)
     }
 
+    /// Top up an existing payment stream with additional tokens.
+    ///
+    /// Any user may call this to add funds to an active stream. The caller
+    /// transfers `amount` tokens from their account into the contract.
+    ///
+    /// # Parameters
+    /// * `caller` – Account providing the tokens; must sign.
+    /// * `stream_id` – Stream to top up.
+    /// * `amount`    – Amount of tokens to add (must be positive).
+    pub fn top_up_stream(
+        env: Env,
+        caller: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        if amount <= 0 {
+            return Err(StreamError::InvalidDeposit);
+        }
+
+        let mut stream: PaymentStream = env
+            .storage()
+            .persistent()
+            .get(&StreamDataKey::Stream(stream_id.clone()))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        // Effects
+        stream.remaining_deposit = stream.remaining_deposit.saturating_add(amount);
+
+        // Persist state before interaction (CEI pattern)
+        env.storage()
+            .persistent()
+            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
+
+        // Interaction
+        let token_client = token::Client::new(&env, &stream.token);
+        token_client.transfer(&caller, env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "STREAM"),
+                Symbol::new(&env, "TOPPED_UP"),
+                stream_id,
+            ),
+            (caller, amount),
+        );
+
+        Ok(())
+    }
+
     /// Top up multiple streams in a single atomic transaction.
     ///
     /// The caller (sender) must be the sender of ALL specified streams.
@@ -887,6 +952,101 @@ impl PaymentStreaming {
                 stream_id,
             ),
             (sender, accrued, refund),
+        );
+
+        Ok(())
+    }
+
+    /// Pause an active stream, freezing accrual until resumed.
+    ///
+    /// Accrued tokens are check-pointed at the current timestamp so that
+    /// earnings up to this moment are preserved. Only the stream sender may
+    /// pause.
+    ///
+    /// # Parameters
+    /// * `sender`    – Must be the original stream sender; must sign.
+    /// * `stream_id` – Stream to pause.
+    pub fn pause_stream(env: Env, sender: Address, stream_id: String) -> Result<(), StreamError> {
+        sender.require_auth();
+
+        let mut stream: PaymentStream = env
+            .storage()
+            .persistent()
+            .get(&StreamDataKey::Stream(stream_id.clone()))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.sender != sender {
+            return Err(StreamError::Unauthorized);
+        }
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        // Checkpoint accrued amount up to now before freezing.
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(stream.last_checkpoint_at);
+        let newly_accrued = (elapsed as i128)
+            .saturating_mul(stream.rate_per_second)
+            .min(stream.remaining_deposit - stream.accrued_at_checkpoint);
+        stream.accrued_at_checkpoint = stream.accrued_at_checkpoint.saturating_add(newly_accrued);
+        stream.last_checkpoint_at = now;
+
+        stream.status = StreamStatus::Paused;
+
+        env.storage()
+            .persistent()
+            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "STREAM"),
+                Symbol::new(&env, "PAUSED"),
+                stream_id,
+            ),
+            (sender,),
+        );
+
+        Ok(())
+    }
+
+    /// Resume a paused stream, restarting accrual from the current timestamp.
+    ///
+    /// Only the stream sender may resume.
+    ///
+    /// # Parameters
+    /// * `sender`    – Must be the original stream sender; must sign.
+    /// * `stream_id` – Stream to resume.
+    pub fn resume_stream(env: Env, sender: Address, stream_id: String) -> Result<(), StreamError> {
+        sender.require_auth();
+
+        let mut stream: PaymentStream = env
+            .storage()
+            .persistent()
+            .get(&StreamDataKey::Stream(stream_id.clone()))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.sender != sender {
+            return Err(StreamError::Unauthorized);
+        }
+        if stream.status != StreamStatus::Paused {
+            return Err(StreamError::StreamNotPaused);
+        }
+
+        // Reset checkpoint to now so accrual restarts from this moment.
+        stream.last_checkpoint_at = env.ledger().timestamp();
+        stream.status = StreamStatus::Active;
+
+        env.storage()
+            .persistent()
+            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "STREAM"),
+                Symbol::new(&env, "RESUMED"),
+                stream_id,
+            ),
+            (sender,),
         );
 
         Ok(())

@@ -254,8 +254,7 @@ fn test_upgrade_contract_payment_processor() {
     let new_wasm_hash = BytesN::<32>::random(&env);
 
     // Admin can upgrade
-    let result = payment_client.upgrade_contract(&admin, &new_wasm_hash);
-    assert!(result.is_ok());
+    payment_client.upgrade_contract(&admin, &new_wasm_hash);
 }
 
 #[test]
@@ -269,8 +268,7 @@ fn test_upgrade_contract_payment_processor_non_admin_rejected() {
     let new_wasm_hash = BytesN::<32>::random(&env);
 
     // Non-admin cannot upgrade
-    let result = payment_client.upgrade_contract(&non_admin, &new_wasm_hash);
-    assert!(result.is_err());
+    assert!(payment_client.try_upgrade_contract(&non_admin, &new_wasm_hash).is_err());
 }
 
 #[test]
@@ -283,8 +281,7 @@ fn test_upgrade_contract_refund_manager() {
     let new_wasm_hash = BytesN::<32>::random(&env);
 
     // Admin can upgrade
-    let result = refund_client.upgrade_contract(&admin, &new_wasm_hash);
-    assert!(result.is_ok());
+    refund_client.upgrade_contract(&admin, &new_wasm_hash);
 }
 
 #[test]
@@ -298,8 +295,7 @@ fn test_upgrade_contract_refund_manager_non_admin_rejected() {
     let new_wasm_hash = BytesN::<32>::random(&env);
 
     // Non-admin cannot upgrade
-    let result = refund_client.upgrade_contract(&non_admin, &new_wasm_hash);
-    assert!(result.is_err());
+    assert!(refund_client.try_upgrade_contract(&non_admin, &new_wasm_hash).is_err());
 }
 
 #[test]
@@ -337,8 +333,7 @@ fn test_upgrade_contract_storage_compatibility() {
 
     // Perform upgrade
     let new_wasm_hash = BytesN::<32>::random(&env);
-    let result = payment_client.upgrade_contract(&admin, &new_wasm_hash);
-    assert!(result.is_ok());
+    payment_client.upgrade_contract(&admin, &new_wasm_hash);
 
     // Verify payment still exists after upgrade (storage compatibility)
     let payment_after = payment_client.get_payment(&payment_id);
@@ -384,11 +379,10 @@ fn test_prune_expired_payments_expired_pending() {
     // Prune the expired payment
     let payment_ids = vec![&env, payment_id.clone()];
     let result = payment_client.prune_expired_payments(&operator, &payment_ids);
-    assert_eq!(result.unwrap(), 1);
+    assert_eq!(result, 1);
 
     // Verify payment is deleted
-    let get_result = payment_client.get_payment(&payment_id);
-    assert!(get_result.is_err());
+    assert!(payment_client.try_get_payment(&payment_id).is_err());
 }
 
 #[test]
@@ -427,11 +421,10 @@ fn test_prune_expired_payments_non_expired_skipped() {
     // Prune (payment should not be pruned as it's not expired)
     let payment_ids = vec![&env, payment_id.clone()];
     let result = payment_client.prune_expired_payments(&operator, &payment_ids);
-    assert_eq!(result.unwrap(), 0);
+    assert_eq!(result, 0);
 
     // Verify payment still exists
-    let payment_info = payment_client.get_payment(&payment_id);
-    assert!(payment_info.is_ok());
+    payment_client.get_payment(&payment_id);
 }
 
 #[test]
@@ -479,11 +472,11 @@ fn test_prune_expired_payments_non_pending_skipped() {
     // Prune (confirmed payment should not be pruned)
     let payment_ids = vec![&env, payment_id.clone()];
     let result = payment_client.prune_expired_payments(&operator, &payment_ids);
-    assert_eq!(result.unwrap(), 0);
+    assert_eq!(result, 0);
 
     // Verify payment still exists
     let payment_info = payment_client.get_payment(&payment_id);
-    assert_eq!(payment_info.unwrap().status, PaymentStatus::Confirmed);
+    assert_eq!(payment_info.status, PaymentStatus::Confirmed);
 }
 
 #[test]
@@ -496,8 +489,7 @@ fn test_prune_expired_payments_unauthorized_rejected() {
 
     // Try to prune as non-operator
     let payment_ids = vec![&env];
-    let result = payment_client.prune_expired_payments(&non_operator, &payment_ids);
-    assert!(result.is_err());
+    assert!(payment_client.try_prune_expired_payments(&non_operator, &payment_ids).is_err());
 }
 
 #[test]
@@ -513,7 +505,7 @@ fn test_prune_expired_payments_empty_list() {
     // Prune with empty list
     let payment_ids = vec![&env];
     let result = payment_client.prune_expired_payments(&operator, &payment_ids);
-    assert_eq!(result.unwrap(), 0);
+    assert_eq!(result, 0);
 }
 
 #[test]
@@ -538,10 +530,10 @@ fn test_settle_payment_with_zero_merchant_fee() {
         &None,
     );
     merchant_client.verify_merchant(&admin, &merchant);
-    merchant_client.set_fee_config(&admin, &merchant, &0, &0, &None::<Address>);
+    merchant_client.set_fee_config(&admin, &merchant, &0i128, &0i128, &None::<Address>);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     // Create and settle payment
     let payment_id = String::from_str(&env, "PAY_ZERO_FEE");
@@ -573,10 +565,9 @@ fn test_settle_payment_with_zero_merchant_fee() {
         recipient: merchant.clone(),
         amount,
     }];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
-    let payment = payment_client.get_payment(&payment_id).unwrap();
+    let payment = payment_client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
 
@@ -602,10 +593,10 @@ fn test_settle_payment_with_bps_only_fee() {
         &None,
     );
     merchant_client.verify_merchant(&admin, &merchant);
-    merchant_client.set_fee_config(&admin, &merchant, &500, &0, &None::<Address>);
+    merchant_client.set_fee_config(&admin, &merchant, &500i128, &0i128, &None::<Address>);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     // Create and settle payment
     let payment_id = String::from_str(&env, "PAY_BPS_FEE");
@@ -637,10 +628,9 @@ fn test_settle_payment_with_bps_only_fee() {
         recipient: merchant.clone(),
         amount,
     }];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
-    let payment = payment_client.get_payment(&payment_id).unwrap();
+    let payment = payment_client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
 
@@ -666,10 +656,10 @@ fn test_settle_payment_with_fixed_fee() {
         &None,
     );
     merchant_client.verify_merchant(&admin, &merchant);
-    merchant_client.set_fee_config(&admin, &merchant, &0, &100, &None::<Address>);
+    merchant_client.set_fee_config(&admin, &merchant, &0i128, &100i128, &None::<Address>);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     // Create and settle payment
     let payment_id = String::from_str(&env, "PAY_FIXED_FEE");
@@ -701,10 +691,9 @@ fn test_settle_payment_with_fixed_fee() {
         recipient: merchant.clone(),
         amount,
     }];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
-    let payment = payment_client.get_payment(&payment_id).unwrap();
+    let payment = payment_client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
 
@@ -730,10 +719,10 @@ fn test_settle_payment_with_combined_fee() {
         &None,
     );
     merchant_client.verify_merchant(&admin, &merchant);
-    merchant_client.set_fee_config(&admin, &merchant, &200, &50, &None::<Address>);
+    merchant_client.set_fee_config(&admin, &merchant, &200i128, &50i128, &None::<Address>);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     // Create and settle payment
     let payment_id = String::from_str(&env, "PAY_COMBINED_FEE");
@@ -765,10 +754,9 @@ fn test_settle_payment_with_combined_fee() {
         recipient: merchant.clone(),
         amount,
     }];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
-    let payment = payment_client.get_payment(&payment_id).unwrap();
+    let payment = payment_client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
 
@@ -815,10 +803,9 @@ fn test_settle_payment_no_registry_configured() {
         recipient: Address::generate(&env),
         amount,
     }];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
-    let payment = payment_client.get_payment(&payment_id).unwrap();
+    let payment = payment_client.get_payment(&payment_id);
     assert_eq!(payment.status, PaymentStatus::Settled);
 }
 
@@ -830,7 +817,7 @@ fn test_cross_contract_happy_path() {
     let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     let merchant = Address::generate(&env);
     let customer = Address::generate(&env);
@@ -874,21 +861,19 @@ fn test_cross_contract_happy_path() {
         client_token: None,
         metadata_hash: None,
     };
-    let result = payment_client.create_payment(&args);
-    assert!(result.is_ok());
+    payment_client.create_payment(&args);
 
     let payment_info = payment_client.get_payment(&payment_id);
-    assert_eq!(payment_info.unwrap().status, PaymentStatus::Pending);
+    assert_eq!(payment_info.status, PaymentStatus::Pending);
 
     // Confirm payment
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     let tx_hash = BytesN::<32>::random(&env);
-    let result = payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
-    assert!(result.is_ok());
+    payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
 
     let confirmed = payment_client.get_payment(&payment_id);
-    assert_eq!(confirmed.unwrap().status, PaymentStatus::Confirmed);
+    assert_eq!(confirmed.status, PaymentStatus::Confirmed);
 
     // Settle payment
     let splits = vec![
@@ -898,11 +883,10 @@ fn test_cross_contract_happy_path() {
             amount,
         },
     ];
-    let result = payment_client.settle_payment(&operator, &payment_id, &splits);
-    assert!(result.is_ok());
+    payment_client.settle_payment(&operator, &payment_id, &splits);
 
     let settled = payment_client.get_payment(&payment_id);
-    assert_eq!(settled.unwrap().status, PaymentStatus::Settled);
+    assert_eq!(settled.status, PaymentStatus::Settled);
 }
 
 #[test]
@@ -913,7 +897,7 @@ fn test_cross_contract_unverified_merchant_rejection() {
     let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     let merchant = Address::generate(&env);
 
@@ -948,8 +932,7 @@ fn test_cross_contract_unverified_merchant_rejection() {
     };
 
     // Creating payment with unverified merchant should fail
-    let result = payment_client.create_payment(&args);
-    assert!(result.is_err());
+    assert!(payment_client.try_create_payment(&args).is_err());
 }
 
 #[test]
@@ -960,7 +943,7 @@ fn test_cross_contract_suspended_merchant_rejection() {
     let (admin, payment_client, _refund_client, merchant_client) = setup_integration(&env);
 
     // Wire payment processor to merchant registry
-    payment_client.set_merchant_registry_address(&admin, &merchant_client.address());
+    payment_client.set_merchant_registry_address(&admin, &merchant_client.address);
 
     let merchant = Address::generate(&env);
 
@@ -980,7 +963,7 @@ fn test_cross_contract_suspended_merchant_rejection() {
         &admin,
         &merchant,
         &String::from_str(&env, "Suspicious activity"),
-        &None::<u64>,
+        &0u64,
     );
 
     // Try to create payment with suspended merchant
@@ -1004,8 +987,7 @@ fn test_cross_contract_suspended_merchant_rejection() {
     };
 
     // Creating payment with suspended merchant should fail
-    let result = payment_client.create_payment(&args);
-    assert!(result.is_err());
+    assert!(payment_client.try_create_payment(&args).is_err());
 }
 
 #[test]
@@ -1052,16 +1034,14 @@ fn test_cross_contract_registry_not_set_regression() {
     };
 
     // Should succeed because merchant has MERCHANT role (registry check skipped)
-    let result = payment_client.create_payment(&args);
-    assert!(result.is_ok());
+    payment_client.create_payment(&args);
 
     // Verify payment
     let oracle = Address::generate(&env);
     payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
     let tx_hash = BytesN::<32>::random(&env);
-    let result = payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
-    assert!(result.is_ok());
+    payment_client.verify_payment(&oracle, &payment_id, &tx_hash, &customer, &amount);
 
     let payment_info = payment_client.get_payment(&payment_id);
-    assert_eq!(payment_info.unwrap().status, PaymentStatus::Confirmed);
+    assert_eq!(payment_info.status, PaymentStatus::Confirmed);
 }

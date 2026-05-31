@@ -699,11 +699,15 @@ impl MerchantRegistry {
     }
 
     /// Set the platform fee configuration (admin only).
+    /// `_merchant_id` and `fixed_fee` are accepted for API compatibility and reserved for
+    /// future per-merchant fee support.
     pub fn set_fee_config(
         env: Env,
         admin: Address,
+        _merchant_id: Address,
         fee_bps: i128,
-        fee_recipient: Address,
+        _fixed_fee: i128,
+        fee_recipient: Option<Address>,
     ) -> Result<(), MerchantError> {
         admin.require_auth();
         let stored_admin: Address = env
@@ -714,9 +718,10 @@ impl MerchantRegistry {
         if admin != stored_admin {
             return Err(MerchantError::Unauthorized);
         }
+        let recipient = fee_recipient.unwrap_or_else(|| env.current_contract_address());
         env.storage()
             .persistent()
-            .set(&MerchantDataKey::FeeConfig, &PlatformFeeConfig { fee_bps, fee_recipient });
+            .set(&MerchantDataKey::FeeConfig, &PlatformFeeConfig { fee_bps, fee_recipient: recipient });
         Ok(())
     }
 

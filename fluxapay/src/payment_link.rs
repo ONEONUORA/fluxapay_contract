@@ -52,8 +52,19 @@ impl PaymentLinkManager {
         max_uses: Option<u32>,
         direct_transfer: bool,
         metadata: Option<Map<String, String>>,
-    ) -> String {
+    ) -> Result<String, crate::Error> {
         merchant.require_auth();
+
+        if let Some(ref meta_map) = metadata {
+            if meta_map.len() > 20 {
+                return Err(crate::Error::MetadataTooLarge);
+            }
+            for (_, value) in meta_map.iter() {
+                if value.len() > 256 {
+                    return Err(crate::Error::MetadataValueTooLong);
+                }
+            }
+        }
 
         let link = PaymentLink {
             link_id: link_id.clone(),
@@ -79,7 +90,7 @@ impl PaymentLinkManager {
             (link_id.clone(), merchant),
         );
 
-        link_id
+        Ok(link_id)
     }
 
     pub fn use_link(

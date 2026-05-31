@@ -13,6 +13,7 @@ doctest = false
 # Default builds PaymentProcessor (the primary contract).
 default = ["contract-payment-processor"]
 contract-payment-processor = []
+contract-payment-streaming = []
 contract-refund-manager = []
 contract-gas-estimator = []
 contract-fx-oracle = []

@@ -244,6 +244,10 @@ FluxaPay emits the following on-chain events for refund lifecycle tracking:
 | `REFUND/REJECTED` | Operator rejects the refund request |
 | `REFUND/CANCELLED` | Requester or admin cancels a pending refund |
 
+## Architecture
+
+For a detailed understanding of the contract structure, cross-contract interactions, role model, and payment lifecycle, see [docs/architecture.md](docs/architecture.md).
+
 ## Telegram link
 
 <https://t.me/+m23gN14007w0ZmQ0>

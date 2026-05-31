@@ -323,6 +323,51 @@ fn test_withdrawn_event_includes_remaining_deposit() {
 }
 
 #[test]
+fn test_top_up_stream_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, receiver, token) = setup(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token);
+
+    let stream_id = String::from_str(&env, "stream_top_up");
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+
+    client.top_up_stream(&sender, &stream_id, &250i128);
+
+    let stream = client.get_stream(&stream_id);
+    assert_eq!(stream.remaining_deposit, 750);
+    assert_eq!(token_client.balance(&client.address), 750i128);
+}
+
+#[test]
+fn test_top_up_stream_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, receiver, token) = setup(&env);
+
+    let stream_id = String::from_str(&env, "stream_top_up_auth");
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+
+    let impostor = Address::generate(&env);
+    let result = client.try_top_up_stream(&impostor, &stream_id, &50i128);
+    assert_eq!(result, Err(Ok(StreamError::Unauthorized)));
+}
+
+#[test]
+fn test_top_up_stream_rejects_inactive_stream() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, receiver, token) = setup(&env);
+
+    let stream_id = String::from_str(&env, "stream_top_up_inactive");
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+    client.cancel_stream(&sender, &stream_id);
+
+    let result = client.try_top_up_stream(&sender, &stream_id, &50i128);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotActive)));
+}
+
+#[test]
 fn test_decrease_rate_to_exactly_min_rate_succeeds() {
     let env = Env::default();
     env.mock_all_auths();

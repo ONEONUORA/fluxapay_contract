@@ -249,6 +249,8 @@ pub enum Error {
     RefundCooldownNotElapsed = 42,
     /// Refund request has expired and cannot be processed.
     RefundExpired = 36,
+    /// Batch payment request exceeds the supported maximum size.
+    BatchTooLarge = 35,
     /// Insufficient arbitrators available for voting.
     InsufficientArbitrators = 37,
     /// Voting threshold not met for dispute resolution.
@@ -265,6 +267,8 @@ pub enum Error {
     StaleOracleRate = 45,
     /// Issue #313: Reentrancy detected in process_refund_internal or settle_payment.
     Reentrancy = 43,
+    /// Treasury balance is smaller than the requested withdrawal amount.
+    InsufficientTreasuryBalance = 46,
 }
 
 #[contracttype]
@@ -561,6 +565,7 @@ pub enum DataKey {
     PaymentDisputes(String),
     DisputeCounter,
     Stream(String),
+    TreasuryBalance,
     UsdcToken,
     Paused,
     CreationPaused,
@@ -1154,6 +1159,56 @@ impl RefundManager {
         Self::process_refund_internal(&env, &operator, refund_id)
     }
 
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TreasuryBalance)
+            .unwrap_or(0)
+    }
+
+    pub fn withdraw_treasury(
+        env: Env,
+        admin: Address,
+        amount: i128,
+        destination: Address,
+    ) -> Result<(), Error> {
+        admin.require_auth();
+
+        if !AccessControl::has_role(&env, &role_admin(&env), &admin) {
+            return Err(Error::Unauthorized);
+        }
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        let treasury_balance = Self::get_treasury_balance(env.clone());
+        if amount > treasury_balance {
+            return Err(Error::InsufficientTreasuryBalance);
+        }
+
+        let usdc_token_address: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UsdcToken)
+            .ok_or(Error::Unauthorized)?;
+        let token_client = token::TokenClient::new(&env, &usdc_token_address);
+        let contract_address = env.current_contract_address();
+
+        env.storage().persistent().set(
+            &DataKey::TreasuryBalance,
+            &treasury_balance.saturating_sub(amount),
+        );
+
+        token_client.transfer(&contract_address, &destination, &amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "TREASURY"), Symbol::new(&env, "WITHDRAWN")),
+            (amount, destination),
+        );
+
+        Ok(())
+    }
+
     fn process_refund_internal(
         env: &Env,
         _operator: &Address,
@@ -1287,41 +1342,12 @@ impl RefundManager {
             return Ok(());
         }
 
-        // Issue #168: Fee split destinations
         if fee > 0 {
-            let fee_split: Option<FeeSplitConfig> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::FeeSplitConfig);
-            
-            if let Some(config) = fee_split {
-                // Validate split adds up to 100%
-                if config.treasury_bps + config.developer_bps == 10_000 {
-                    let treasury_fee = fee * config.treasury_bps as i128 / 10_000;
-                    let developer_fee = fee * config.developer_bps as i128 / 10_000;
-                    
-                    if treasury_fee > 0 {
-                        let treasury_muxed: MuxedAddress = (&config.treasury_address).into();
-                        let _ = token_client.try_transfer(&from, &treasury_muxed, &treasury_fee);
-                    }
-                    if developer_fee > 0 {
-                        let developer_muxed: MuxedAddress = (&config.developer_address).into();
-                        let _ = token_client.try_transfer(&from, &developer_muxed, &developer_fee);
-                    }
-                } else {
-                    // Fallback to admin if config is invalid
-                    if let Some(admin) = AccessControl::get_admin(env) {
-                        let admin_muxed: MuxedAddress = (&admin).into();
-                        let _ = token_client.try_transfer(&from, &admin_muxed, &fee);
-                    }
-                }
-            } else {
-                // No fee split configured, send to admin
-                if let Some(admin) = AccessControl::get_admin(env) {
-                    let admin_muxed: MuxedAddress = (&admin).into();
-                    let _ = token_client.try_transfer(&from, &admin_muxed, &fee);
-                }
-            }
+            let current_treasury_balance = Self::get_treasury_balance(env.clone());
+            env.storage().persistent().set(
+                &DataKey::TreasuryBalance,
+                &current_treasury_balance.saturating_add(fee),
+            );
         }
         
         env.events().publish(
@@ -1893,6 +1919,44 @@ impl RefundManager {
             (dispute.payment_id, dispute_id, deadline),
         );
 
+        Ok(())
+    }
+
+    fn maybe_escalate_dispute_due_to_deadline(
+        env: &Env,
+        dispute_id: &String,
+        dispute: &mut Dispute,
+    ) -> Result<bool, Error> {
+        if dispute.status == DisputeStatus::Resolved || dispute.status == DisputeStatus::Rejected {
+            return Ok(false);
+        }
+
+        let Some(deadline) = dispute.review_deadline else {
+            return Ok(false);
+        };
+
+        let now = env.ledger().timestamp();
+        if now <= deadline || dispute.escalated {
+            return Ok(false);
+        }
+
+        dispute.escalated = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
+        Self::bump_dispute_ttl(env, dispute_id, &dispute.status);
+        env.events().publish(
+            (Symbol::new(env, "DISPUTE"), Symbol::new(env, "ESCALATED")),
+            (dispute.payment_id.clone(), dispute_id.clone(), dispute.amount),
+        );
+
+        Ok(true)
+    }
+
+    /// Anyone may call this to trigger escalation after a dispute review deadline elapses.
+    pub fn check_dispute_deadline(env: Env, dispute_id: String) -> Result<(), Error> {
+        let mut dispute = Self::get_dispute_internal(&env, &dispute_id)?;
+        let _ = Self::maybe_escalate_dispute_due_to_deadline(&env, &dispute_id, &mut dispute)?;
         Ok(())
     }
 
@@ -2572,24 +2636,7 @@ impl RefundManager {
 
     pub fn get_dispute(env: Env, dispute_id: String) -> Result<Dispute, Error> {
         let mut dispute = Self::get_dispute_internal(&env, &dispute_id)?;
-        let now = env.ledger().timestamp();
-        if let Some(deadline) = dispute.review_deadline {
-            if now > deadline
-                && !dispute.escalated
-                && dispute.status != DisputeStatus::Resolved
-                && dispute.status != DisputeStatus::Rejected
-            {
-                dispute.escalated = true;
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
-                Self::bump_dispute_ttl(&env, &dispute_id, &dispute.status);
-                env.events().publish(
-                    (Symbol::new(&env, "DISPUTE"), Symbol::new(&env, "ESCALATED")),
-                    (dispute.payment_id.clone(), dispute_id, dispute.amount),
-                );
-            }
-        }
+        let _ = Self::maybe_escalate_dispute_due_to_deadline(&env, &dispute_id, &mut dispute)?;
         Ok(dispute)
     }
 
@@ -3915,6 +3962,54 @@ impl PaymentProcessor {
         Ok(())
     }
 
+    fn enforce_create_payment_batch_rate_limit(
+        env: &Env,
+        merchant_id: &Address,
+    ) -> Result<(), Error> {
+        let now = env.ledger().timestamp();
+
+        let config: RateLimitConfig = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantSpecificRateLimit(merchant_id.clone()))
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get(&DataKey::GlobalRateLimit)
+                    .unwrap_or(RateLimitConfig {
+                        window_secs: CREATE_PAYMENT_WINDOW_SECS,
+                        max_per_window: CREATE_PAYMENT_MAX_PER_WINDOW,
+                    })
+            });
+
+        let key = DataKey::MerchantRateLimit(merchant_id.clone());
+
+        let mut state: MerchantCreateRateLimit = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(MerchantCreateRateLimit {
+                last_payment_at: now,
+                count: 0,
+            });
+
+        if now.saturating_sub(state.last_payment_at) >= config.window_secs {
+            state.count = 0;
+        }
+
+        if state.count >= config.max_per_window {
+            return Err(Error::RateLimitExceeded);
+        }
+
+        state.count = state.count.saturating_add(1);
+        state.last_payment_at = now;
+
+        env.storage().persistent().set(&key, &state);
+        Self::bump_ttl(env, &key, SHORT_LIVE_TTL);
+
+        Ok(())
+    }
+
     /// Set per-merchant min/max payment amount limits (merchant self-service).
     /// Pass None to clear a bound. Requires the caller to hold the MERCHANT role.
     pub fn set_merchant_amount_limits(
@@ -4337,15 +4432,25 @@ impl PaymentProcessor {
     ) -> Result<Vec<String>, Error> {
         Self::require_creation_not_paused(&env)?;
 
+        if args_list.len() > 50 {
+            return Err(Error::BatchTooLarge);
+        }
+
         if args_list.is_empty() {
             return Ok(vec![&env]);
         }
+
+        let mut batch_merchants: Vec<Address> = vec![&env];
 
         // Validate all payments first before creating any
         for args in args_list.iter() {
             args.merchant_id.require_auth();
             Self::require_not_blacklisted(&env, &args.merchant_id)?;
             Self::require_not_blacklisted(&env, &args.deposit_address)?;
+
+            if !batch_merchants.contains(&args.merchant_id) {
+                batch_merchants.push_back(args.merchant_id.clone());
+            }
 
             // Verify merchant role
             if !AccessControl::has_role(&env, &role_merchant(&env), &args.merchant_id) {
@@ -4440,14 +4545,15 @@ impl PaymentProcessor {
             }
         }
 
+        for merchant_id in batch_merchants.iter() {
+            Self::enforce_create_payment_batch_rate_limit(&env, merchant_id)?;
+        }
+
         // All validations passed, now create all payments
         let mut payment_ids = vec![&env];
         let now = env.ledger().timestamp();
 
         for args in args_list.iter() {
-            // Rate limit check per merchant
-            Self::enforce_create_payment_rate_limit(&env, &args.merchant_id)?;
-
             let resolved_expires_at = match args.expires_at {
                 Some(ts) => ts,
                 None => now.saturating_add(args.duration_secs.unwrap_or(DEFAULT_PAYMENT_DURATION_SECS)),
@@ -5614,6 +5720,15 @@ impl PaymentProcessor {
         top_ups: Vec<(String, i128)>,
     ) -> Result<(), StreamError> {
         PaymentStreaming::top_up_multiple_streams(env, sender, top_ups)
+    }
+
+    pub fn top_up_stream(
+        env: Env,
+        sender: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        PaymentStreaming::top_up_stream(env, sender, stream_id, amount)
     }
 
     /// Update the flow rate of an active stream (increase or decrease).

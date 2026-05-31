@@ -52,6 +52,23 @@ fn setup_refund_manager(env: &Env) -> (Address, RefundManagerClient<'_>) {
     (admin, client)
 }
 
+fn setup_refund_manager_with_token(env: &Env) -> (Address, RefundManagerClient<'_>, Address) {
+    let contract_id = env.register(RefundManager, ());
+    let client = RefundManagerClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+
+    let token_admin = Address::generate(env);
+    let usdc_token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    client.initialize_refund_manager(&admin, &usdc_token);
+
+    let token_admin_client = token::StellarAssetClient::new(env, &usdc_token);
+    token_admin_client.mint(&contract_id, &1_000_000_000_000i128);
+
+    (admin, client, usdc_token)
+}
+
 fn create_payment_args(
     env: &Env,
     payment_id: &String,
@@ -141,6 +158,72 @@ fn test_create_payment_rate_limit_enforced() {
     let overflow = client.try_create_payment(&args);
 
     assert_eq!(overflow, Err(Ok(Error::RateLimitExceeded)));
+}
+
+#[test]
+fn test_create_payments_batch_returns_ids_in_order() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_payment_processor(&env);
+
+    let merchant_id = Address::generate(&env);
+    client.grant_role(&admin, &role_merchant(&env), &merchant_id);
+
+    let payment_id_1 = String::from_str(&env, "batch_payment_1");
+    let payment_id_2 = String::from_str(&env, "batch_payment_2");
+    let batch = vec![
+        &env,
+        create_payment_args(&env, &payment_id_1, &merchant_id, 100i128),
+        create_payment_args(&env, &payment_id_2, &merchant_id, 200i128),
+    ];
+
+    let payment_ids = client.create_payments_batch(&batch);
+
+    assert_eq!(payment_ids.len(), 2);
+    assert_eq!(payment_ids.get(0).unwrap(), payment_id_1);
+    assert_eq!(payment_ids.get(1).unwrap(), payment_id_2);
+}
+
+#[test]
+fn test_create_payments_batch_rejects_oversized_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_payment_processor(&env);
+
+    let merchant_id = Address::generate(&env);
+    client.grant_role(&admin, &role_merchant(&env), &merchant_id);
+
+    let mut batch = vec![&env];
+    for i in 0..51u32 {
+        let payment_id = format_id(&env, "batch_limit_", i as u64);
+        batch.push_back(create_payment_args(&env, &payment_id, &merchant_id, 100i128));
+    }
+
+    let result = client.try_create_payments_batch(&batch);
+    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+}
+
+#[test]
+fn test_create_payments_batch_is_atomic_on_validation_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_payment_processor(&env);
+
+    let merchant_id = Address::generate(&env);
+    client.grant_role(&admin, &role_merchant(&env), &merchant_id);
+
+    let payment_id_1 = String::from_str(&env, "batch_atomic_1");
+    let payment_id_2 = String::from_str(&env, "batch_atomic_2");
+    let batch = vec![
+        &env,
+        create_payment_args(&env, &payment_id_1, &merchant_id, 100i128),
+        create_payment_args(&env, &payment_id_2, &merchant_id, 0i128),
+    ];
+
+    let result = client.try_create_payments_batch(&batch);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
+    assert!(!env.storage().persistent().has(&DataKey::Payment(payment_id_1)));
+    assert!(!env.storage().persistent().has(&DataKey::Payment(payment_id_2)));
 }
 
 #[test]
@@ -662,6 +745,63 @@ fn test_process_refund() {
 
     let refund = client.get_refund(&refund_id);
     assert_eq!(refund.status, RefundStatus::Completed);
+}
+
+#[test]
+fn test_process_refund_accumulates_treasury_and_withdraws() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client, usdc_token) = setup_refund_manager_with_token(&env);
+    let token_client = token::StellarAssetClient::new(&env, &usdc_token);
+
+    let merchant_id = Address::generate(&env);
+    let operator = Address::generate(&env);
+    client.grant_role(&admin, &role_settlement_operator(&env), &operator);
+
+    let payment_ids = ["refund_treasury_a", "refund_treasury_b"];
+    for payment_suffix in payment_ids.iter() {
+        let payment_id = String::from_str(&env, payment_suffix);
+        let requester = Address::generate(&env);
+
+        client.register_payment(
+            &payment_id,
+            &merchant_id,
+            &5000i128,
+            &Symbol::new(&env, "USDC"),
+        );
+
+        let refund_id = client.create_refund(
+            &payment_id,
+            &1000i128,
+            &String::from_str(&env, "Reason"),
+            &requester,
+        );
+
+        client.process_refund(&operator, &refund_id);
+    }
+
+    assert_eq!(client.get_treasury_balance(), 20i128);
+
+    let destination = Address::generate(&env);
+    let starting_balance = token_client.balance(&destination);
+
+    client.withdraw_treasury(&admin, &15i128, &destination);
+
+    assert_eq!(client.get_treasury_balance(), 5i128);
+    assert_eq!(token_client.balance(&destination), starting_balance + 15i128);
+}
+
+#[test]
+fn test_withdraw_treasury_rejects_insufficient_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client, _usdc_token) = setup_refund_manager_with_token(&env);
+
+    let destination = Address::generate(&env);
+    let result = client.try_withdraw_treasury(&admin, &1i128, &destination);
+
+    assert_eq!(result, Err(Ok(Error::InsufficientTreasuryBalance)));
+    assert_eq!(client.get_treasury_balance(), 0i128);
 }
 
 #[test]

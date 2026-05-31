@@ -764,45 +764,63 @@ impl PaymentStreaming {
 
         for top_up in top_ups.iter() {
             let (stream_id, amount) = top_up;
-            if amount <= 0 {
-                return Err(StreamError::InvalidDeposit);
-            }
-
-            let mut stream: PaymentStream = env
-                .storage()
-                .persistent()
-                .get(&StreamDataKey::Stream(stream_id.clone()))
-                .ok_or(StreamError::StreamNotFound)?;
-
-            if stream.sender != sender {
-                return Err(StreamError::Unauthorized);
-            }
-            if stream.status != StreamStatus::Active {
-                return Err(StreamError::StreamNotActive);
-            }
-
-            // Effects
-            stream.remaining_deposit = stream.remaining_deposit.saturating_add(amount);
-
-            // Persist state before interaction
-            env.storage()
-                .persistent()
-                .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
-
-            // Interaction
-            let token_client = token::Client::new(&env, &stream.token);
-            token_client.transfer(&sender, env.current_contract_address(), &amount);
-
-            // Event
-            env.events().publish(
-                (
-                    Symbol::new(&env, "STREAM"),
-                    Symbol::new(&env, "TOPPED_UP"),
-                    stream_id,
-                ),
-                (sender.clone(), amount),
-            );
+            Self::top_up_stream_internal(&env, &sender, stream_id, *amount)?;
         }
+
+        Ok(())
+    }
+
+    pub fn top_up_stream(
+        env: Env,
+        sender: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        sender.require_auth();
+
+        Self::top_up_stream_internal(&env, &sender, &stream_id, amount)
+    }
+
+    fn top_up_stream_internal(
+        env: &Env,
+        sender: &Address,
+        stream_id: &String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        if amount <= 0 {
+            return Err(StreamError::InvalidDeposit);
+        }
+
+        let mut stream: PaymentStream = env
+            .storage()
+            .persistent()
+            .get(&StreamDataKey::Stream(stream_id.clone()))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.sender != *sender {
+            return Err(StreamError::Unauthorized);
+        }
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        stream.remaining_deposit = stream.remaining_deposit.saturating_add(amount);
+
+        env.storage()
+            .persistent()
+            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
+
+        let token_client = token::Client::new(env, &stream.token);
+        token_client.transfer(sender, env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (
+                Symbol::new(env, "STREAM"),
+                Symbol::new(env, "TOPPED_UP"),
+                stream_id.clone(),
+            ),
+            (sender.clone(), amount),
+        );
 
         Ok(())
     }

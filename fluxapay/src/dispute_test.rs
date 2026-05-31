@@ -3,7 +3,7 @@ use crate::{
     RefundManagerClient, RefundStatus,
 };
 use soroban_sdk::{
-    testutils::{Address as _, BytesN as _},
+    testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     token, vec, Address, BytesN, Env, String, Symbol,
 };
 
@@ -133,6 +133,62 @@ fn test_review_dispute() {
     // Verify dispute status changed
     let dispute: Dispute = refund_client.get_dispute(&dispute_id);
     assert_eq!(dispute.status, DisputeStatus::UnderReview);
+}
+
+#[test]
+fn test_check_dispute_deadline_escalates_once() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, payment_client, refund_client) = setup_contracts(&env);
+    let merchant = Address::generate(&env);
+    let customer = Address::generate(&env);
+    let operator = Address::generate(&env);
+
+    refund_client.grant_role(&admin, &Symbol::new(&env, "SETTLEMENT_OPERATOR"), &operator);
+
+    let payment_id = String::from_str(&env, "payment_deadline_001");
+    let amount = 750i128;
+
+    payment_client.grant_role(&admin, &Symbol::new(&env, "MERCHANT"), &merchant);
+    let args = create_payment_args(&env, &payment_id, &merchant, amount);
+    payment_client.create_payment(&args);
+
+    let transaction_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let oracle = Address::generate(&env);
+    payment_client.grant_role(&admin, &Symbol::new(&env, "ORACLE"), &oracle);
+    payment_client.verify_payment(&oracle, &payment_id, &transaction_hash, &customer, &amount);
+
+    refund_client.register_payment(&payment_id, &merchant, &amount, &Symbol::new(&env, "USDC"));
+
+    let dispute_id = refund_client.create_dispute(
+        &payment_id,
+        &amount,
+        &String::from_str(&env, "Deadline test"),
+        &String::from_str(&env, "Evidence"),
+        &customer,
+        &vec![&env],
+    );
+
+    let now = env.ledger().timestamp();
+    refund_client.set_dispute_deadline(&operator, &dispute_id, &(now + 10));
+
+    let events_after_deadline = env.events().all().len();
+
+    refund_client.check_dispute_deadline(&dispute_id);
+    let dispute = refund_client.get_dispute(&dispute_id);
+    assert!(!dispute.escalated);
+    assert_eq!(env.events().all().len(), events_after_deadline);
+
+    env.ledger().set_timestamp(now + 11);
+    refund_client.check_dispute_deadline(&dispute_id);
+
+    let escalated = refund_client.get_dispute(&dispute_id);
+    assert!(escalated.escalated);
+    assert_eq!(env.events().all().len(), events_after_deadline + 1);
+
+    refund_client.check_dispute_deadline(&dispute_id);
+    assert_eq!(env.events().all().len(), events_after_deadline + 1);
 }
 
 #[test]

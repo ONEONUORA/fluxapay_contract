@@ -748,6 +748,61 @@ impl PaymentStreaming {
         Ok(stream_id)
     }
 
+    /// Top up an existing payment stream with additional tokens.
+    ///
+    /// Any user may call this to add funds to an active stream. The caller
+    /// transfers `amount` tokens from their account into the contract.
+    ///
+    /// # Parameters
+    /// * `caller` – Account providing the tokens; must sign.
+    /// * `stream_id` – Stream to top up.
+    /// * `amount`    – Amount of tokens to add (must be positive).
+    pub fn top_up_stream(
+        env: Env,
+        caller: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        if amount <= 0 {
+            return Err(StreamError::InvalidDeposit);
+        }
+
+        let mut stream: PaymentStream = env
+            .storage()
+            .persistent()
+            .get(&StreamDataKey::Stream(stream_id.clone()))
+            .ok_or(StreamError::StreamNotFound)?;
+
+        if stream.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+
+        // Effects
+        stream.remaining_deposit = stream.remaining_deposit.saturating_add(amount);
+
+        // Persist state before interaction (CEI pattern)
+        env.storage()
+            .persistent()
+            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
+
+        // Interaction
+        let token_client = token::Client::new(&env, &stream.token);
+        token_client.transfer(&caller, env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "STREAM"),
+                Symbol::new(&env, "TOPPED_UP"),
+                stream_id,
+            ),
+            (caller, amount),
+        );
+
+        Ok(())
+    }
+
     /// Top up multiple streams in a single atomic transaction.
     ///
     /// The caller (sender) must be the sender of ALL specified streams.

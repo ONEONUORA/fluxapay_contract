@@ -5608,6 +5608,18 @@ impl PaymentProcessor {
         )
     }
 
+    pub fn top_up_stream(
+        env: Env,
+        caller: Address,
+        stream_id: String,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        if Self::is_blacklisted_address(&env, &caller) {
+            return Err(StreamError::Unauthorized);
+        }
+        PaymentStreaming::top_up_stream(env, caller, stream_id, amount)
+    }
+
     pub fn top_up_multiple_streams(
         env: Env,
         sender: Address,

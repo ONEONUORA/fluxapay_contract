@@ -945,7 +945,7 @@ impl RefundManager {
                 payer_address: None,
                 transaction_hash: None,
                 created_at: env.ledger().timestamp(),
-                confirmed_at: None,
+                confirmed_at: Some(env.ledger().timestamp()),
                 expires_at: 0,
                 amount_received: None,
                 memo: None,

@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contracterror, contracttype, token, Address, Env, String, Symbol, Vec,
+    contract, contractimpl, contracterror, contracttype, token, Address, Env, String, Symbol, Vec,
 };
 
 use crate::PaymentProcessor;
@@ -200,10 +200,16 @@ fn get_recipient_stream_id(env: &Env, recipient: &Address, idx: u32) -> Option<S
 
 // ─── Implementation ───────────────────────────────────────────────────────────
 // PaymentStreaming is an internal helper called by PaymentProcessor.
-// It is NOT a standalone #[contract] — that would duplicate exported symbols.
+// #[contract] marks it so testutils can register it; #[contractimpl] is
+// conditional to avoid duplicate exported symbols in the PaymentProcessor WASM.
 
+#[contract]
 pub struct PaymentStreaming;
 
+#[cfg_attr(
+    any(not(target_arch = "wasm32"), feature = "contract-payment-streaming"),
+    contractimpl
+)]
 #[allow(deprecated)] // events::publish — migrate to #[contractevent] in a follow-up
 impl PaymentStreaming {
     /// Contract version bump helper.
@@ -277,7 +283,7 @@ impl PaymentStreaming {
             last_checkpoint_at: now,
             accrued_at_checkpoint: 0,
             status: StreamStatus::Active,
-            milestones_approved: false,
+            milestones_approved: true,
         };
 
         // Persist state before interaction (reentrancy protection)

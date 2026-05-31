@@ -97,7 +97,10 @@ pub fn execute_with_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{Address, Bytes, Env};
+    use soroban_sdk::{
+        testutils::Address as _,
+        Address, Bytes, Env,
+    };
 
     #[test]
     fn test_execute_with_session_valid_key() {

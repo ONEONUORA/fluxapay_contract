@@ -170,6 +170,107 @@ fn test_link_expired() {
 }
 
 #[test]
+fn test_verify_batch_returns_status_for_active_links() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (merchant, client) = setup_payment_link(&env);
+
+    let link_id1 = String::from_str(&env, "batch_link_1");
+    let link_id2 = String::from_str(&env, "batch_link_2");
+
+    client.create_link(
+        &merchant,
+        &link_id1,
+        &Some(500i128),
+        &Symbol::new(&env, "USDC"),
+        &String::from_str(&env, "Batch 1"),
+        &None,
+        &None,
+        &false,
+        &None,
+    ).unwrap();
+    client.create_link(
+        &merchant,
+        &link_id2,
+        &Some(1000i128),
+        &Symbol::new(&env, "USDC"),
+        &String::from_str(&env, "Batch 2"),
+        &None,
+        &None,
+        &false,
+        &None,
+    ).unwrap();
+
+    let results = client.verify_batch(&vec![&env, link_id1.clone(), link_id2.clone()]);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], (link_id1.clone(), true, 0, None));
+    assert_eq!(results[1], (link_id2.clone(), true, 0, None));
+}
+
+#[test]
+fn test_verify_batch_handles_missing_links() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (merchant, client) = setup_payment_link(&env);
+
+    let existing_link = String::from_str(&env, "existing_batch_link");
+    let missing_link = String::from_str(&env, "missing_batch_link");
+
+    client.create_link(
+        &merchant,
+        &existing_link,
+        &Some(1000i128),
+        &Symbol::new(&env, "USDC"),
+        &String::from_str(&env, "Existing"),
+        &None,
+        &None,
+        &false,
+        &None,
+    ).unwrap();
+
+    let results = client.verify_batch(&vec![&env, existing_link.clone(), missing_link.clone()]);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], (existing_link.clone(), true, 0, None));
+    assert_eq!(results[1], (missing_link.clone(), false, 0, None));
+}
+
+#[test]
+fn test_verify_batch_returns_inactive_for_deactivated_link() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (merchant, client) = setup_payment_link(&env);
+
+    let link_id = String::from_str(&env, "deactivated_batch_link");
+    client.create_link(
+        &merchant,
+        &link_id,
+        &Some(1000i128),
+        &Symbol::new(&env, "USDC"),
+        &String::from_str(&env, "Deactivated"),
+        &None,
+        &Some(10),
+        &false,
+        &None,
+    ).unwrap();
+
+    client.deactivate_link(&merchant, &link_id);
+
+    let results = client.verify_batch(&vec![&env, link_id.clone()]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], (link_id.clone(), false, 0, Some(10)));
+}
+
+#[test]
+fn test_verify_batch_empty_input_returns_empty_vec() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_merchant, client) = setup_payment_link(&env);
+
+    let results: Vec<(String, bool, u32, Option<u32>)> = client.verify_batch(&vec![&env]);
+    assert!(results.is_empty());
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #14)")]
 fn test_max_uses() {
     let env = Env::default();

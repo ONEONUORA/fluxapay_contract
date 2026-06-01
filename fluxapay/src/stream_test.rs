@@ -341,6 +341,41 @@ fn test_top_up_stream_success() {
 }
 
 #[test]
+fn test_top_up_multiple_streams_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, receiver, token) = setup(&env);
+
+    let stream_id1 = String::from_str(&env, "stream_top_up_multi_1");
+    let stream_id2 = String::from_str(&env, "stream_top_up_multi_2");
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1);
+    client.create_stream(&sender, &receiver, &token, &20i128, &500i128, &stream_id2);
+
+    let top_ups = vec![&env, (stream_id1.clone(), 100i128), (stream_id2.clone(), 200i128)];
+    client.top_up_multiple_streams(&sender, &top_ups).unwrap();
+
+    let stream1 = client.get_stream(&stream_id1);
+    let stream2 = client.get_stream(&stream_id2);
+    assert_eq!(stream1.remaining_deposit, 600);
+    assert_eq!(stream2.remaining_deposit, 700);
+}
+
+#[test]
+fn test_top_up_multiple_streams_unauthorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, receiver, token) = setup(&env);
+
+    let stream_id1 = String::from_str(&env, "stream_top_up_multi_auth_1");
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1);
+
+    let impostor = Address::generate(&env);
+    let top_ups = vec![&env, (stream_id1.clone(), 100i128)];
+    let result = client.try_top_up_multiple_streams(&impostor, &top_ups);
+    assert_eq!(result, Err(Ok(StreamError::Unauthorized)));
+}
+
+#[test]
 fn test_top_up_stream_unauthorized_caller() {
     let env = Env::default();
     env.mock_all_auths();
@@ -416,6 +451,89 @@ fn test_decrease_rate_with_zero_min_rate() {
 
     let stream = client.get_stream(&stream_id);
     assert_eq!(stream.rate_per_second, 1);
+}
+
+#[test]
+fn test_cancel_multiple_streams_with_partial_invalid_id_errors() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, recipient, token) = setup(&env);
+
+    let stream_id1 = String::from_str(&env, "stream_cancel_partial_1");
+    client.create_stream(&sender, &recipient, &token, &100i128, &500i128, &stream_id1);
+
+    let missing_stream_id = String::from_str(&env, "stream_cancel_missing");
+    let stream_ids = vec![&env, stream_id1.clone(), missing_stream_id];
+
+    let result = client.try_cancel_multiple_streams(&sender, &stream_ids);
+    assert_eq!(result, Err(Ok(StreamError::StreamNotFound)));
+
+    let stream1 = client.get_stream(&stream_id1);
+    assert_eq!(stream1.status, StreamStatus::Active);
+}
+
+#[test]
+fn test_batch_withdraw_to_multiple_destinations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, recipient, token) = setup(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token);
+
+    let stream_id1 = String::from_str(&env, "stream_withdraw_multi_1");
+    let stream_id2 = String::from_str(&env, "stream_withdraw_multi_2");
+    let destination1 = Address::generate(&env);
+    let destination2 = Address::generate(&env);
+
+    token_client.mint(&sender, &10_000i128);
+    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id1);
+    client.create_stream(&sender, &recipient, &token, &200i128, &2_000i128, &stream_id2);
+
+    client.approve_stream_milestone(&sender, &stream_id1);
+    client.approve_stream_milestone(&sender, &stream_id2);
+    env.ledger().set_timestamp(env.ledger().timestamp() + 5);
+
+    let withdrawal1 = crate::WithdrawalRecipient {
+        stream_id: stream_id1.clone(),
+        destination: destination1.clone(),
+        amount: 100,
+    };
+    let withdrawal2 = crate::WithdrawalRecipient {
+        stream_id: stream_id2.clone(),
+        destination: destination2.clone(),
+        amount: 100,
+    };
+    let withdrawals = vec![&env, withdrawal1, withdrawal2];
+
+    let processed = client.batch_withdraw_to(&recipient, &withdrawals).unwrap();
+    assert_eq!(processed.len(), 2);
+    assert_eq!(token_client.balance(&destination1), 100);
+    assert_eq!(token_client.balance(&destination2), 100);
+}
+
+#[test]
+fn test_batch_withdraw_to_skips_zero_accrued_streams() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, sender, recipient, token) = setup(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token);
+
+    let stream_id = String::from_str(&env, "stream_withdraw_zero_accrued");
+    let destination = Address::generate(&env);
+
+    token_client.mint(&sender, &10_000i128);
+    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id);
+    client.approve_stream_milestone(&sender, &stream_id);
+
+    let withdrawal = crate::WithdrawalRecipient {
+        stream_id: stream_id.clone(),
+        destination: destination.clone(),
+        amount: 100,
+    };
+    let withdrawals = vec![&env, withdrawal];
+
+    let processed = client.batch_withdraw_to(&recipient, &withdrawals).unwrap();
+    assert_eq!(processed.len(), 0);
+    assert_eq!(token_client.balance(&destination), 0);
 }
 
 #[test]

@@ -97,3 +97,47 @@ fn test_update_staleness_threshold() {
     client.set_staleness_threshold(&admin, &3600);
     assert_eq!(client.get_staleness_threshold(), 3600);
 }
+
+#[test]
+fn test_oracle_grant_role_by_admin_grants_role() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_oracle(&env);
+    let oracle = Address::generate(&env);
+    let role = Symbol::new(&env, "ORACLE");
+
+    client.oracle_grant_role(&admin, &role, &oracle).unwrap();
+    assert!(client.oracle_has_role(&role, &oracle));
+}
+
+#[test]
+fn test_oracle_grant_role_by_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, client) = setup_oracle(&env);
+    let non_admin = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let role = Symbol::new(&env, "ORACLE");
+
+    let result = client.try_oracle_grant_role(&non_admin, &role, &oracle);
+    assert_eq!(result, Err(Ok(FXOracleError::Unauthorized)));
+}
+
+#[test]
+fn test_get_fx_admin_returns_initialized_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_oracle(&env);
+
+    assert_eq!(client.get_fx_admin(), Some(admin));
+}
+
+#[test]
+fn test_get_fx_admin_before_initialization_returns_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(FXOracle, ());
+    let client = FXOracleClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_fx_admin(), None);
+}

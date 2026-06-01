@@ -515,7 +515,7 @@ impl AccessControl {
         }
 
         if !Self::has_role(env, &role, &account) {
-            return Err(AccessControlError::RoleNotGranted);
+            return Ok(());
         }
 
         Self::revoke_role_internal(env, &role, &account);

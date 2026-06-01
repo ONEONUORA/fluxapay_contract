@@ -68,6 +68,45 @@ fn test_transfer_admin_without_admin_signature() {
 }
 
 #[test]
+fn test_renounce_role_self_removes_role() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, _payment_client, refund_client, _merchant_client) = setup_contracts(&env);
+    let account = Address::generate(&env);
+    let role = Symbol::new(&env, "ORACLE");
+
+    refund_client.grant_role(&admin, &role, &account);
+    assert!(refund_client.has_role(&role, &account));
+
+    refund_client.renounce_role(&account, &role);
+    assert!(!refund_client.has_role(&role, &account));
+}
+
+#[test]
+fn test_renounce_role_non_holder_is_idempotent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _payment_client, refund_client, _merchant_client) = setup_contracts(&env);
+    let account = Address::generate(&env);
+    let role = Symbol::new(&env, "ORACLE");
+
+    let result = refund_client.try_renounce_role(&account, &role);
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
+fn test_transfer_admin_by_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, _payment_client, refund_client, _merchant_client) = setup_contracts(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = refund_client.try_transfer_admin(&non_admin, &new_admin);
+    assert_eq!(result, Err(Ok(crate::Error::AccessControlError)));
+}
+
+#[test]
 #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
 fn test_verify_payment_without_oracle_signature() {
     let env = Env::default();

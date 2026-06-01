@@ -1082,7 +1082,42 @@ fn test_pagination_with_large_merchant_list() {
 }
 
 #[test]
-fn test_pagination_with_zero_limit() {
+fn test_get_all_merchants_pagination_offset_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(MerchantRegistry, ());
+    let client = MerchantRegistryClient::new(&env, &contract_id);
+
+    let merchant_names = [
+        "Merchant A",
+        "Merchant B",
+        "Merchant C",
+        "Merchant D",
+        "Merchant E",
+    ];
+
+    for name in merchant_names.iter() {
+        let merchant_id = Address::generate(&env);
+        client.register_merchant(
+            &merchant_id,
+            &String::from_str(&env, name),
+            &String::from_str(&env, "USDC"),
+            &None,
+            &None,
+            &None,
+        );
+    }
+
+    let page1 = client.get_all_merchants(&0, &3);
+    assert_eq!(page1.len(), 3);
+
+    let page2 = client.get_all_merchants(&1, &3);
+    assert_eq!(page2.len(), 3);
+
+    let page_out_of_range = client.get_all_merchants(&6, &3);
+    assert_eq!(page_out_of_range.len(), 0);
+}
     let env = Env::default();
     env.mock_all_auths();
 

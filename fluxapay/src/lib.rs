@@ -267,6 +267,8 @@ pub enum Error {
     StaleOracleRate = 45,
     /// Issue #313: Reentrancy detected in process_refund_internal or settle_payment.
     Reentrancy = 43,
+    /// Upgrade failed — WASM hash replacement rejected by the host.
+    UpgradeFailed = 48,
     /// Treasury balance is smaller than the requested withdrawal amount.
     InsufficientTreasuryBalance = 46,
     /// Issue #317: Payment link metadata has too many keys (> 20).
@@ -625,7 +627,12 @@ pub enum DataKey {
     SubscriptionTickCounter,
     /// Issue #313: Reentrancy lock for process_refund_internal and settle_payment.
     ReentrancyLock,
+    /// Contract version string, updated on each successful upgrade.
+    ContractVersion,
 }
+
+/// Default initial contract version string.
+pub const INITIAL_CONTRACT_VERSION: &str = "1.0.0";
 
 // When building for WASM deployment, only the active contract's #[contractimpl]
 // is compiled to avoid duplicate exported symbols. On non-WASM targets (tests,
@@ -3648,8 +3655,18 @@ impl RefundManager {
 )]
 #[allow(deprecated)] // events::publish — migrate to #[contractevent] in a follow-up
 impl PaymentProcessor {
-    pub fn version() -> u32 {
-        1
+    /// Returns the current contract version string from persistent storage.
+    /// Falls back to INITIAL_CONTRACT_VERSION if not set.
+    pub fn version(env: Env) -> String {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContractVersion)
+            .unwrap_or_else(|| String::from_str(&env, INITIAL_CONTRACT_VERSION))
+    }
+
+    /// Alias for version() — returns the current contract version string.
+    pub fn get_version(env: Env) -> String {
+        Self::version(env)
     }
 
     fn validate_init_admin(env: &Env, admin: Address) -> Result<(), Error> {
@@ -3678,6 +3695,13 @@ impl PaymentProcessor {
         env.storage()
             .persistent()
             .set(&DataKey::CreationPaused, &initial_state);
+
+        // Set initial contract version
+        let initial_version = String::from_str(&env, INITIAL_CONTRACT_VERSION);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ContractVersion, &initial_version);
+
         Ok(())
     }
 
@@ -5791,6 +5815,11 @@ impl PaymentProcessor {
         PaymentStreaming::get_stream_fee_bps(env)
     }
 
+    /// Upgrade the contract WASM and increment the contract version.
+    ///
+    /// Only the admin can call this. On success, the `ContractVersion` in persistent
+    /// storage is updated and a `CONTRACT/UPGRADED` event is emitted with the old and
+    /// new version strings.
     pub fn upgrade_contract(env: Env, admin: Address, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         admin.require_auth();
 
@@ -5798,9 +5827,119 @@ impl PaymentProcessor {
             return Err(Error::Unauthorized);
         }
 
+        let old_version = Self::version(env.clone());
+
+        // Increment the minor version: parse "X.Y.Z" → "X.Y+1.Z", or default to "2.0.0"
+        let new_version_str = bump_version_string(&env, &old_version);
+
+        // Call the host function to replace the WASM
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+
+        // Persist the updated version string
+        env.storage()
+            .persistent()
+            .set(&DataKey::ContractVersion, &new_version_str);
+
+        // Emit CONTRACT/UPGRADED event with old and new version
+        env.events().publish(
+            (Symbol::new(&env, "CONTRACT"), Symbol::new(&env, "UPGRADED")),
+            (old_version, new_version_str),
+        );
+
         Ok(())
     }
+}
+
+/// Bumps the version string by incrementing the number after the last '.'.
+/// Works with versions like "1.0.0" → "1.0.1", "1" → "2", "v1" → "v2".
+/// Uses byte-level parsing since Soroban's String API doesn't support string
+/// manipulation in no_std. Defaults to "2.0.0" if parsing fails.
+fn bump_version_string(env: &Env, version: &String) -> String {
+    use soroban_sdk::Bytes;
+
+    let bytes: Bytes = version.to_bytes();
+    let len = bytes.len() as usize;
+
+    // Find the last '.' or the start of the version number
+    let mut last_dot = None;
+    let mut i = 0usize;
+    while i < len {
+        if bytes.get(i as u32) == Some(b'.') {
+            last_dot = Some(i);
+        }
+        i += 1;
+    }
+
+    // Parse the numeric part to bump from the last dot position
+    let num_start = last_dot.map(|p| p + 1).unwrap_or(0);
+    let mut num_val: u32 = 0;
+    let mut j = num_start;
+    while j < len {
+        match bytes.get(j as u32) {
+            Some(b @ b'0'..=b'9') => {
+                num_val = num_val.saturating_mul(10).saturating_add((b - b'0') as u32);
+            }
+            _ => break,
+        }
+        j += 1;
+    }
+
+    // Bump by 1
+    let new_num = num_val.saturating_add(1);
+
+    // Build prefix (everything before the number)
+    let prefix_bytes = &bytes.to_array::<32>().unwrap_or([0u8; 32])[..num_start];
+
+    // Encode the new number as an ASCII byte slice
+    let mut num_buf = [0u8; 12];
+    let mut num_len = 0usize;
+    if new_num == 0 {
+        num_buf[0] = b'0';
+        num_len = 1;
+    } else {
+        let mut n = new_num;
+        let mut rev = [0u8; 12];
+        let mut rl = 0usize;
+        while n > 0 {
+            rev[rl] = (n % 10) as u8 + b'0';
+            n /= 10;
+            rl += 1;
+        }
+        while rl > 0 {
+            rl -= 1;
+            num_buf[num_len] = rev[rl];
+            num_len += 1;
+        }
+    }
+
+    // Build suffix (everything after the number)
+    let suffix_start = j;
+    let mut suffix = version.to_bytes();
+    let suffix_part: Bytes = {
+        let mut b = Bytes::new(env);
+        let mut k = suffix_start;
+        while k < len {
+            b.push_back(bytes.get(k as u32).unwrap_or(b' '));
+            k += 1;
+        }
+        b
+    };
+
+    // Reconstruct: prefix + new_number + suffix
+    let mut result = Bytes::new(env);
+    for &b in prefix_bytes.iter().take(num_start) {
+        result.push_back(b);
+    }
+    for k in 0..num_len {
+        result.push_back(num_buf[k]);
+    }
+    let mut k = 0usize;
+    while k < suffix_part.len() as usize {
+        result.push_back(suffix_part.get(k as u32).unwrap_or(b' '));
+        k += 1;
+    }
+
+    String::from_bytes(env, &result)
 }
 
 #[cfg(test)]

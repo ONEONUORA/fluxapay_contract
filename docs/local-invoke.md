@@ -690,8 +690,13 @@ stellar contract invoke \
   -- get_merchant_payments_paginated \
   --merchant_id $TEST_MERCHANT_ADDRESS \
   --offset 0 \
-  --limit 10
+  --limit 10 \
+  --status_filter null
 ```
+
+Set `status_filter` to a `PaymentStatus` value such as `Pending` or
+`Confirmed` to paginate only matching merchant payment IDs. Use `null` to
+preserve the unfiltered behavior.
 
 ### Monitor Payment Events
 

@@ -562,10 +562,93 @@ fn test_get_merchant_payments_index_and_pagination() {
     assert_eq!(all.get(1), Some(payment_id_2.clone()));
     assert_eq!(all.get(2), Some(payment_id_3.clone()));
 
-    let page = client.get_merchant_payments_paginated(&merchant_id, &1u32, &2u32);
+    let page =
+        client.get_merchant_payments_paginated(&merchant_id, &1u32, &2u32, &None::<PaymentStatus>);
     assert_eq!(page.len(), 2);
     assert_eq!(page.get(0), Some(payment_id_2));
     assert_eq!(page.get(1), Some(payment_id_3));
+}
+
+#[test]
+fn test_get_merchant_payments_paginated_filters_by_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, client) = setup_payment_processor(&env);
+
+    let merchant_id = Address::generate(&env);
+    let payment_id_1 = String::from_str(&env, "status_filter_1");
+    let payment_id_2 = String::from_str(&env, "status_filter_2");
+    let payment_id_3 = String::from_str(&env, "status_filter_3");
+
+    client.grant_role(&admin, &role_merchant(&env), &merchant_id);
+    client.create_payment(&create_payment_args(
+        &env,
+        &payment_id_1,
+        &merchant_id,
+        100i128,
+    ));
+    client.create_payment(&create_payment_args(
+        &env,
+        &payment_id_2,
+        &merchant_id,
+        200i128,
+    ));
+    client.create_payment(&create_payment_args(
+        &env,
+        &payment_id_3,
+        &merchant_id,
+        300i128,
+    ));
+
+    let oracle = Address::generate(&env);
+    client.grant_role(&admin, &role_oracle(&env), &oracle);
+    client.verify_payment(
+        &oracle,
+        &payment_id_2,
+        &BytesN::<32>::random(&env),
+        &Address::generate(&env),
+        &200i128,
+    );
+
+    let all =
+        client.get_merchant_payments_paginated(&merchant_id, &0u32, &10u32, &None::<PaymentStatus>);
+    assert_eq!(all.len(), 3);
+
+    let pending = client.get_merchant_payments_paginated(
+        &merchant_id,
+        &0u32,
+        &10u32,
+        &Some(PaymentStatus::Pending),
+    );
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending.get(0), Some(payment_id_1));
+    assert_eq!(pending.get(1), Some(payment_id_3.clone()));
+
+    let confirmed = client.get_merchant_payments_paginated(
+        &merchant_id,
+        &0u32,
+        &10u32,
+        &Some(PaymentStatus::Confirmed),
+    );
+    assert_eq!(confirmed.len(), 1);
+    assert_eq!(confirmed.get(0), Some(payment_id_2));
+
+    let paged_pending = client.get_merchant_payments_paginated(
+        &merchant_id,
+        &1u32,
+        &1u32,
+        &Some(PaymentStatus::Pending),
+    );
+    assert_eq!(paged_pending.len(), 1);
+    assert_eq!(paged_pending.get(0), Some(payment_id_3));
+
+    let settled = client.get_merchant_payments_paginated(
+        &merchant_id,
+        &0u32,
+        &10u32,
+        &Some(PaymentStatus::Settled),
+    );
+    assert_eq!(settled.len(), 0);
 }
 
 #[test]

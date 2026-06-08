@@ -4878,19 +4878,36 @@ impl PaymentProcessor {
         merchant_id: Address,
         offset: u32,
         limit: u32,
+        status_filter: Option<PaymentStatus>,
     ) -> Vec<String> {
         let all = Self::get_merchant_payments_internal(&env, &merchant_id);
         if limit == 0 {
             return vec![&env];
         }
 
+        let mut filtered = vec![&env];
+        for id in all.iter() {
+            let matches_filter = match &status_filter {
+                Some(status) => env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, PaymentCharge>(&DataKey::Payment(id.clone()))
+                    .map_or(false, |payment| payment.status == status.clone()),
+                None => true,
+            };
+
+            if matches_filter {
+                filtered.push_back(id);
+            }
+        }
+
         let mut page = vec![&env];
         let start = offset;
-        let end = core::cmp::min(all.len(), start.saturating_add(limit));
+        let end = core::cmp::min(filtered.len(), start.saturating_add(limit));
 
         let mut i = start;
         while i < end {
-            if let Some(id) = all.get(i) {
+            if let Some(id) = filtered.get(i) {
                 page.push_back(id);
             }
             i += 1;

@@ -106,7 +106,7 @@ fn test_oracle_grant_role_by_admin_grants_role() {
     let oracle = Address::generate(&env);
     let role = Symbol::new(&env, "ORACLE");
 
-    client.oracle_grant_role(&admin, &role, &oracle).unwrap();
+    client.oracle_grant_role(&admin, &role, &oracle);
     assert!(client.oracle_has_role(&role, &oracle));
 }
 

@@ -1,4 +1,4 @@
-use crate::{
+﻿use crate::{
     access_control::role_merchant, CreatePaymentArgs, PaymentProcessor, PaymentProcessorClient,
     PaymentStatus,
 };
@@ -32,7 +32,7 @@ fn create_payment_args(
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     }
 }
 

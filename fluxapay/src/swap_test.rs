@@ -3,7 +3,7 @@ use crate::{
     PaymentProcessor, PaymentProcessorClient, SwapAndPayArgs,
 };
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracterror, testutils::Address as _, vec, Address,
+    contract, contractimpl, contracterror, testutils::Address as _, vec, Address,
     Env, String, Symbol, Vec,
 };
 
@@ -17,18 +17,6 @@ pub enum MockDexError {
 
 #[contract]
 pub struct MockDexRouter;
-
-#[contractclient(name = "MockDexRouterClient")]
-pub trait MockDexRouterTrait {
-    fn swap_exact_tokens_for_tokens(
-        env: Env,
-        amount_in: i128,
-        amount_out_min: i128,
-        path: Vec<Address>,
-        to: Address,
-        deadline: u64,
-    ) -> Result<Vec<i128>, MockDexError>;
-}
 
 #[cfg_attr(
     any(not(target_arch = "wasm32"), feature = "contract-payment-processor"),
@@ -151,7 +139,7 @@ fn test_swap_and_pay_happy_path_with_mock_dex() {
 
     let payment = payment_client.swap_and_pay(&args);
     assert_eq!(payment.payment_id, args.payment_id);
-    assert_eq!(payment.status, Symbol::new(&env, "SETTLED"));
+    assert_eq!(payment.status, crate::PaymentStatus::Settled);
 }
 
 #[test]

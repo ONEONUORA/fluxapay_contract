@@ -1,4 +1,4 @@
-#![cfg(test)]
+﻿#![cfg(test)]
 
 use super::*;
 use access_control::{role_admin, role_oracle, role_settlement_operator};
@@ -87,7 +87,7 @@ fn create_payment_args(
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     }
 }
 
@@ -1152,20 +1152,6 @@ fn test_admin_in_role_members_after_init() {
     assert_eq!(members.get(0), Some(admin));
 }
 
-fn setup_refund_manager_with_token(env: &Env) -> (Address, RefundManagerClient<'_>, Address) {
-    let contract_id = env.register(RefundManager, ());
-    let client = RefundManagerClient::new(env, &contract_id);
-    let admin = Address::generate(env);
-    let token_admin = Address::generate(env);
-    let usdc_token = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
-    client.initialize_refund_manager(&admin, &usdc_token);
-    let token_admin_client = token::StellarAssetClient::new(env, &usdc_token);
-    token_admin_client.mint(&contract_id, &1_000_000_000_000i128);
-    (admin, client, usdc_token)
-}
-
 #[test]
 fn test_process_refund_deducts_fee_from_requester() {
     let env = Env::default();
@@ -2207,7 +2193,7 @@ fn test_create_payment_idempotency_retry_returns_same_payment() {
         memo_type: None,
         token_address: None,
         client_token: client_token.clone(),
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     let first = client.create_payment(&args);
@@ -2243,7 +2229,7 @@ fn test_create_payment_idempotency_different_payment_id_fails() {
         memo_type: None,
         token_address: None,
         client_token: client_token.clone(),
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     // First call succeeds
@@ -2282,7 +2268,7 @@ fn test_create_payment_without_idempotency_token_fails_on_retry() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     client.create_payment(&args);

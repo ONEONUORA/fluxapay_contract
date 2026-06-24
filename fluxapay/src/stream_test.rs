@@ -1,10 +1,10 @@
-#![cfg(test)]
+﻿#![cfg(test)]
 
 use super::stream::{PaymentStreaming, PaymentStreamingClient, StreamError, StreamStatus};
 use crate::utils::format_id;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    token, Address, Env, String,
+    token, vec, Address, Env, String,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -331,7 +331,7 @@ fn test_top_up_stream_success() {
     let token_client = token::StellarAssetClient::new(&env, &token);
 
     let stream_id = String::from_str(&env, "stream_top_up");
-    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id, &None::<i128>);
 
     client.top_up_stream(&sender, &stream_id, &250i128);
 
@@ -348,11 +348,11 @@ fn test_top_up_multiple_streams_success() {
 
     let stream_id1 = String::from_str(&env, "stream_top_up_multi_1");
     let stream_id2 = String::from_str(&env, "stream_top_up_multi_2");
-    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1);
-    client.create_stream(&sender, &receiver, &token, &20i128, &500i128, &stream_id2);
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1, &None::<i128>);
+    client.create_stream(&sender, &receiver, &token, &20i128, &500i128, &stream_id2, &None::<i128>);
 
     let top_ups = vec![&env, (stream_id1.clone(), 100i128), (stream_id2.clone(), 200i128)];
-    client.top_up_multiple_streams(&sender, &top_ups).unwrap();
+    client.top_up_multiple_streams(&sender, &top_ups);
 
     let stream1 = client.get_stream(&stream_id1);
     let stream2 = client.get_stream(&stream_id2);
@@ -367,7 +367,7 @@ fn test_top_up_multiple_streams_unauthorized() {
     let (client, sender, receiver, token) = setup(&env);
 
     let stream_id1 = String::from_str(&env, "stream_top_up_multi_auth_1");
-    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1);
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id1, &None::<i128>);
 
     let impostor = Address::generate(&env);
     let top_ups = vec![&env, (stream_id1.clone(), 100i128)];
@@ -382,7 +382,7 @@ fn test_top_up_stream_unauthorized_caller() {
     let (client, sender, receiver, token) = setup(&env);
 
     let stream_id = String::from_str(&env, "stream_top_up_auth");
-    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id, &None::<i128>);
 
     let impostor = Address::generate(&env);
     let result = client.try_top_up_stream(&impostor, &stream_id, &50i128);
@@ -396,7 +396,7 @@ fn test_top_up_stream_rejects_inactive_stream() {
     let (client, sender, receiver, token) = setup(&env);
 
     let stream_id = String::from_str(&env, "stream_top_up_inactive");
-    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id);
+    client.create_stream(&sender, &receiver, &token, &10i128, &500i128, &stream_id, &None::<i128>);
     client.cancel_stream(&sender, &stream_id);
 
     let result = client.try_top_up_stream(&sender, &stream_id, &50i128);
@@ -460,7 +460,7 @@ fn test_cancel_multiple_streams_with_partial_invalid_id_errors() {
     let (client, sender, recipient, token) = setup(&env);
 
     let stream_id1 = String::from_str(&env, "stream_cancel_partial_1");
-    client.create_stream(&sender, &recipient, &token, &100i128, &500i128, &stream_id1);
+    client.create_stream(&sender, &recipient, &token, &100i128, &500i128, &stream_id1, &None::<i128>);
 
     let missing_stream_id = String::from_str(&env, "stream_cancel_missing");
     let stream_ids = vec![&env, stream_id1.clone(), missing_stream_id];
@@ -485,8 +485,8 @@ fn test_batch_withdraw_to_multiple_destinations() {
     let destination2 = Address::generate(&env);
 
     token_client.mint(&sender, &10_000i128);
-    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id1);
-    client.create_stream(&sender, &recipient, &token, &200i128, &2_000i128, &stream_id2);
+    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id1, &None::<i128>);
+    client.create_stream(&sender, &recipient, &token, &200i128, &2_000i128, &stream_id2, &None::<i128>);
 
     client.approve_stream_milestone(&sender, &stream_id1);
     client.approve_stream_milestone(&sender, &stream_id2);
@@ -504,7 +504,7 @@ fn test_batch_withdraw_to_multiple_destinations() {
     };
     let withdrawals = vec![&env, withdrawal1, withdrawal2];
 
-    let processed = client.batch_withdraw_to(&recipient, &withdrawals).unwrap();
+    let processed = client.batch_withdraw_to(&recipient, &withdrawals);
     assert_eq!(processed.len(), 2);
     assert_eq!(token_client.balance(&destination1), 100);
     assert_eq!(token_client.balance(&destination2), 100);
@@ -521,7 +521,7 @@ fn test_batch_withdraw_to_skips_zero_accrued_streams() {
     let destination = Address::generate(&env);
 
     token_client.mint(&sender, &10_000i128);
-    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id);
+    client.create_stream(&sender, &recipient, &token, &100i128, &1_000i128, &stream_id, &None::<i128>);
     client.approve_stream_milestone(&sender, &stream_id);
 
     let withdrawal = crate::WithdrawalRecipient {
@@ -531,7 +531,7 @@ fn test_batch_withdraw_to_skips_zero_accrued_streams() {
     };
     let withdrawals = vec![&env, withdrawal];
 
-    let processed = client.batch_withdraw_to(&recipient, &withdrawals).unwrap();
+    let processed = client.batch_withdraw_to(&recipient, &withdrawals);
     assert_eq!(processed.len(), 0);
     assert_eq!(token_client.balance(&destination), 0);
 }

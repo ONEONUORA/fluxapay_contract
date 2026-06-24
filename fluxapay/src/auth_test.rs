@@ -91,7 +91,7 @@ fn test_renounce_role_non_holder_is_idempotent() {
     let role = Symbol::new(&env, "ORACLE");
 
     let result = refund_client.try_renounce_role(&account, &role);
-    assert_eq!(result, Ok(()));
+    assert!(result.is_ok());
 }
 
 #[test]

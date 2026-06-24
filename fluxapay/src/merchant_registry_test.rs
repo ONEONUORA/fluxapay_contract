@@ -1,4 +1,4 @@
-use super::merchant_registry::*;
+﻿use super::merchant_registry::*;
 use crate::{PaymentProcessor, PaymentProcessorClient, RefundManager, RefundManagerClient};
 use soroban_sdk::{testutils::Address as _, testutils::Events, testutils::Ledger, Address, Env, String, Symbol, TryIntoVal};
 
@@ -360,7 +360,7 @@ fn test_unverified_merchant_cannot_create_payment() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     // This should panic with Unauthorized error
@@ -421,7 +421,7 @@ fn test_verified_merchant_can_create_payment() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     let payment = payment_client.create_payment(&args);
@@ -1332,7 +1332,7 @@ fn test_basic_tier_cap_enforced() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     });
     payment_client.verify_payment(
         &oracle,
@@ -1356,7 +1356,7 @@ fn test_basic_tier_cap_enforced() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     });
 
     let result = payment_client.try_verify_payment(
@@ -1397,7 +1397,7 @@ fn test_business_tier_no_cap() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     });
     payment_client.verify_payment(
         &oracle,
@@ -1436,7 +1436,7 @@ fn test_volume_resets_next_month() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     });
     payment_client.verify_payment(
         &oracle,
@@ -1463,7 +1463,7 @@ fn test_volume_resets_next_month() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     });
     payment_client.verify_payment(
         &oracle,

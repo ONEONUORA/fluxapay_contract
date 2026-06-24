@@ -1,4 +1,4 @@
-use crate::{
+﻿use crate::{
     merchant_registry::{KycTier, MerchantRegistry, MerchantRegistryClient},
     DisputeStatus, PaymentProcessor, PaymentProcessorClient, PaymentStatus, RefundManager,
     RefundManagerClient, RefundStatus, SettlementSplit,
@@ -78,7 +78,7 @@ fn test_happy_path_flow() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -149,7 +149,7 @@ fn test_settlement_path() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -202,7 +202,7 @@ fn test_failure_and_expiration_path() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -323,7 +323,7 @@ fn test_upgrade_contract_storage_compatibility() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -369,7 +369,7 @@ fn test_prune_expired_payments_expired_pending() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -414,7 +414,7 @@ fn test_prune_expired_payments_non_expired_skipped() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -458,7 +458,7 @@ fn test_prune_expired_payments_non_pending_skipped() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -551,7 +551,7 @@ fn test_settle_payment_with_zero_merchant_fee() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -614,7 +614,7 @@ fn test_settle_payment_with_bps_only_fee() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -677,7 +677,7 @@ fn test_settle_payment_with_fixed_fee() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -740,7 +740,7 @@ fn test_settle_payment_with_combined_fee() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -789,7 +789,7 @@ fn test_settle_payment_no_registry_configured() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -859,7 +859,7 @@ fn test_cross_contract_happy_path() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
     payment_client.create_payment(&args);
 
@@ -928,7 +928,7 @@ fn test_cross_contract_unverified_merchant_rejection() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     // Creating payment with unverified merchant should fail
@@ -983,7 +983,7 @@ fn test_cross_contract_suspended_merchant_rejection() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     // Creating payment with suspended merchant should fail
@@ -1030,7 +1030,7 @@ fn test_cross_contract_registry_not_set_regression() {
         memo_type: None,
         token_address: None,
         client_token: None,
-        metadata_hash: None,
+        metadata_hash: None, metadata: None,
     };
 
     // Should succeed because merchant has MERCHANT role (registry check skipped)

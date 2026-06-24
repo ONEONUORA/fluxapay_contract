@@ -2,8 +2,8 @@
 #![allow(clippy::too_many_arguments)]
 use crate::merchant_registry::KycTier;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, vec, Address, BytesN, Env,
-    MuxedAddress, String, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, map, token, vec, Address, BytesN, Env,
+    Map, MuxedAddress, String, Symbol, Vec,
 };
 
 pub const PAYMENT_TOLERANCE: i128 = 1;
@@ -102,6 +102,8 @@ pub struct PaymentCharge {
     pub fx_rate: Option<i128>,
     /// Issue #304: Timestamp when the FX rate was captured.
     pub fx_rate_at: Option<u64>,
+    /// Arbitrary key-value metadata supplied by the merchant at creation time (max 20 keys, 256 chars per value).
+    pub metadata: Option<Map<String, String>>,
 }
 
 #[contracttype]
@@ -271,9 +273,9 @@ pub enum Error {
     UpgradeFailed = 48,
     /// Treasury balance is smaller than the requested withdrawal amount.
     InsufficientTreasuryBalance = 46,
-    /// Issue #317: Payment link metadata has too many keys (> 20).
-    MetadataTooLarge = 46,
-    /// Issue #317: Payment link metadata value exceeds maximum length (> 256 chars).
+    /// Metadata map has too many keys (> 20).
+    MetadataTooLarge = 49,
+    /// A metadata value exceeds maximum length (> 256 chars).
     MetadataValueTooLong = 47,
 }
 
@@ -292,6 +294,8 @@ pub struct CreatePaymentArgs {
     pub token_address: Option<Address>,
     pub client_token: Option<String>,
     pub metadata_hash: Option<BytesN<32>>,
+    /// Arbitrary key-value metadata (max 20 keys, 256 chars per value).
+    pub metadata: Option<Map<String, String>>,
 }
 
 #[contracttype]
@@ -974,6 +978,7 @@ impl RefundManager {
                 swap_path: None,
                 fx_rate: None,
                 fx_rate_at: None,
+                metadata: None,
             };
             env.storage()
                 .persistent()
@@ -1956,7 +1961,7 @@ impl RefundManager {
         dispute.escalated = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Dispute(dispute_id.clone()), &dispute);
+            .set(&DataKey::Dispute(dispute_id.clone()), &*dispute);
         Self::bump_dispute_ttl(env, dispute_id, &dispute.status);
         env.events().publish(
             (Symbol::new(env, "DISPUTE"), Symbol::new(env, "ESCALATED")),
@@ -3201,7 +3206,10 @@ impl RefundManager {
 
             // Emit explicit expired event when the subscription reached its cap.
             if subscription.status == SubscriptionStatus::Expired {
-                env.events().publish((Symbol::new(&env, "SUBSCRIPTION_EXPIRED"),), (subscription_id, payer));
+                env.events().publish(
+                    (Symbol::new(&env, "SUBSCRIPTION"), Symbol::new(&env, "EXPIRED")),
+                    (subscription_id, payer),
+                );
             }
         } else {
             // ── Failure path — grace period / retry logic ─────────────────────
@@ -3231,9 +3239,6 @@ impl RefundManager {
                         subscription.retry_count,
                     ),
                 );
-
-                // Also emit a single-topic cancellation event for indexers.
-                env.events().publish((Symbol::new(&env, "SUBSCRIPTION_CANCELLED"),), (subscription_id, payer));
 
                 return Err(Error::SubscriptionRetryExhausted);
             } else {
@@ -3319,8 +3324,10 @@ impl RefundManager {
         // Issue #302: Remove from ActiveSubscriptions index
         Self::remove_active_subscription(&env, &subscription_id);
 
-        // Emit cancellation event for consumers and indexers
-        env.events().publish((Symbol::new(&env, "SUBSCRIPTION_CANCELLED"),), (payer,));
+        env.events().publish(
+            (Symbol::new(&env, "SUBSCRIPTION"), Symbol::new(&env, "CANCELLED")),
+            (subscription_id, payer),
+        );
 
         Ok(())
     }
@@ -3496,6 +3503,7 @@ impl RefundManager {
                 swap_path: None,
                 fx_rate: None,
                 fx_rate_at: None,
+                metadata: None,
             };
 
             env.storage()
@@ -3538,8 +3546,8 @@ impl RefundManager {
                     );
 
                     env.events().publish(
-                        (Symbol::new(&env, "SUBSCRIPTION_CANCELLED"),),
-                        (subscription.payer_address.clone(),),
+                        (Symbol::new(&env, "SUBSCRIPTION"), Symbol::new(&env, "CANCELLED")),
+                        (subscription_id.clone(), subscription.payer_address.clone()),
                     );
                 }
             }
@@ -3552,9 +3560,8 @@ impl RefundManager {
                 (
                     Symbol::new(&env, "PAYMENT"),
                     Symbol::new(&env, "CREATED"),
-                    subscription.merchant_id.clone(),
                 ),
-                (payment_id.clone(), subscription.amount),
+                (payment_id.clone(), subscription.merchant_id.clone(), subscription.amount, None::<Map<String, String>>),
             );
 
             total_payments = total_payments.saturating_add(1);
@@ -4417,6 +4424,18 @@ impl PaymentProcessor {
             return Err(Error::InvalidPaymentId);
         }
 
+        // Issue #286: Validate metadata constraints
+        if let Some(ref meta_map) = args.metadata {
+            if meta_map.len() > 20 {
+                return Err(Error::MetadataTooLarge);
+            }
+            for (_, value) in meta_map.iter() {
+                if value.len() > 256 {
+                    return Err(Error::MetadataValueTooLong);
+                }
+            }
+        }
+
         Self::enforce_create_payment_rate_limit(&env, &args.merchant_id)?;
 
         let now = env.ledger().timestamp();
@@ -4449,6 +4468,7 @@ impl PaymentProcessor {
             swap_path: None,
             fx_rate: None,
             fx_rate_at: None,
+            metadata: args.metadata.clone(),
         };
 
         env.storage()
@@ -4464,15 +4484,13 @@ impl PaymentProcessor {
             .set(&merchant_payments_key, &merchant_payments);
         Self::bump_ttl(&env, &merchant_payments_key, LONG_LIVE_TTL);
 
-        // Issue #166: Optimize event topics for high-volume ingestions
-        // Use standardized (Symbol, Symbol, Address) format for efficient wildcard filtering
+        // Issue #284: Normalised 2-tuple topic; merchant_id and metadata included in payload.
         env.events().publish(
             (
                 Symbol::new(&env, "PAYMENT"),
                 Symbol::new(&env, "CREATED"),
-                args.merchant_id.clone(),
             ),
-            (args.payment_id.clone(), args.amount),
+            (args.payment_id.clone(), args.merchant_id.clone(), args.amount, args.metadata.clone()),
         );
 
         // Persist idempotency key → payment_id mapping so retries are safe.
@@ -4597,6 +4615,18 @@ impl PaymentProcessor {
                 return Err(Error::InvalidPaymentId);
             }
 
+            // Issue #286: Validate metadata constraints
+            if let Some(ref meta_map) = args.metadata {
+                if meta_map.len() > 20 {
+                    return Err(Error::MetadataTooLarge);
+                }
+                for (_, value) in meta_map.iter() {
+                    if value.len() > 256 {
+                        return Err(Error::MetadataValueTooLong);
+                    }
+                }
+            }
+
             // Check idempotency
             if let Some(ref token) = args.client_token {
                 let key = DataKey::IdempotencyKey(token.clone());
@@ -4609,7 +4639,7 @@ impl PaymentProcessor {
         }
 
         for merchant_id in batch_merchants.iter() {
-            Self::enforce_create_payment_batch_rate_limit(&env, merchant_id)?;
+            Self::enforce_create_payment_batch_rate_limit(&env, &merchant_id)?;
         }
 
         // All validations passed, now create all payments
@@ -4646,6 +4676,7 @@ impl PaymentProcessor {
                 swap_path: None,
                 fx_rate: None,
                 fx_rate_at: None,
+                metadata: args.metadata.clone(),
             };
 
             env.storage()
@@ -4661,14 +4692,12 @@ impl PaymentProcessor {
                 .set(&merchant_payments_key, &merchant_payments);
             Self::bump_ttl(&env, &merchant_payments_key, LONG_LIVE_TTL);
 
-            // Issue #166: Optimize event topics
             env.events().publish(
                 (
                     Symbol::new(&env, "PAYMENT"),
                     Symbol::new(&env, "CREATED"),
-                    args.merchant_id.clone(),
                 ),
-                (args.payment_id.clone(), args.amount),
+                (args.payment_id.clone(), args.merchant_id.clone(), args.amount, args.metadata.clone()),
             );
 
             // Persist idempotency key
@@ -5476,6 +5505,7 @@ impl PaymentProcessor {
             token_address: Some(settlement_token),
             client_token: None,
             metadata_hash: None,
+            metadata: None,
         };
 
         let mut payment = Self::create_payment(env.clone(), create_args)?;
@@ -5865,15 +5895,6 @@ impl PaymentProcessor {
         PaymentStreaming::top_up_multiple_streams(env, sender, top_ups)
     }
 
-    pub fn top_up_stream(
-        env: Env,
-        sender: Address,
-        stream_id: String,
-        amount: i128,
-    ) -> Result<(), StreamError> {
-        PaymentStreaming::top_up_stream(env, sender, stream_id, amount)
-    }
-
     /// Update the flow rate of an active stream (increase or decrease).
     pub fn update_stream_rate(
         env: Env,
@@ -5976,10 +5997,7 @@ fn bump_version_string(env: &Env, version: &String) -> String {
     // Bump by 1
     let new_num = num_val.saturating_add(1);
 
-    // Build prefix (everything before the number)
-    let prefix_bytes = &bytes.to_array::<32>().unwrap_or([0u8; 32])[..num_start];
-
-    // Encode the new number as an ASCII byte slice
+    // Encode the new number as ASCII digits
     let mut num_buf = [0u8; 12];
     let mut num_len = 0usize;
     if new_num == 0 {
@@ -6001,34 +6019,32 @@ fn bump_version_string(env: &Env, version: &String) -> String {
         }
     }
 
-    // Build suffix (everything after the number)
-    let suffix_start = j;
-    let mut suffix = version.to_bytes();
-    let suffix_part: Bytes = {
-        let mut b = Bytes::new(env);
-        let mut k = suffix_start;
-        while k < len {
-            b.push_back(bytes.get(k as u32).unwrap_or(b' '));
-            k += 1;
-        }
-        b
-    };
-
-    // Reconstruct: prefix + new_number + suffix
-    let mut result = Bytes::new(env);
-    for &b in prefix_bytes.iter().take(num_start) {
-        result.push_back(b);
+    // Reconstruct into a fixed-size buffer (max 64 bytes handles any sane version string)
+    let mut result = [0u8; 64];
+    let mut pos = 0usize;
+    // prefix: bytes before the number
+    let mut p = 0usize;
+    while p < num_start && pos < 64 {
+        result[pos] = bytes.get(p as u32).unwrap_or(b' ');
+        pos += 1;
+        p += 1;
     }
+    // new number digits
     for k in 0..num_len {
-        result.push_back(num_buf[k]);
+        if pos < 64 {
+            result[pos] = num_buf[k];
+            pos += 1;
+        }
     }
-    let mut k = 0usize;
-    while k < suffix_part.len() as usize {
-        result.push_back(suffix_part.get(k as u32).unwrap_or(b' '));
+    // suffix: bytes after the number
+    let mut k = j;
+    while k < len && pos < 64 {
+        result[pos] = bytes.get(k as u32).unwrap_or(b' ');
+        pos += 1;
         k += 1;
     }
 
-    String::from_bytes(env, &result)
+    String::from_bytes(env, &result[..pos])
 }
 
 #[cfg(test)]
@@ -6057,6 +6073,8 @@ mod pause_test;
 #[cfg(test)]
 mod payment_link_test;
 mod test;
+#[cfg(test)]
+mod payment_metadata_test;
 
 // Payment streaming module (Issue #127)
 pub mod stream;

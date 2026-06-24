@@ -1,4 +1,4 @@
-use crate::format_id;
+﻿use crate::format_id;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Ledger as _},
@@ -93,7 +93,7 @@ proptest! {
             memo_type: None,
             token_address: None,
             client_token: None,
-            metadata_hash: None,
+            metadata_hash: None, metadata: None,
         };
 
         client.create_payment(&args);
@@ -143,7 +143,7 @@ proptest! {
             memo_type: None,
             token_address: None,
             client_token: None,
-            metadata_hash: None,
+            metadata_hash: None, metadata: None,
         };
 
         client.create_payment(&args);

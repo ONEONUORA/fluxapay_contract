@@ -1,7 +1,7 @@
-use crate::{PaymentLinkManager, PaymentLinkManagerClient};
+﻿use crate::{PaymentLinkManager, PaymentLinkManagerClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    token, Address, Env, Map, String, Symbol,
+    token, vec, Address, Env, Map, String, Symbol,
 };
 
 fn setup_payment_link(env: &Env) -> (Address, PaymentLinkManagerClient<'_>) {
@@ -61,7 +61,7 @@ fn test_use_link_fixed_amount() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     let payment_id = client.use_link(&payer, &link_id, &amount, &None);
     assert!(!payment_id.is_empty());
@@ -112,9 +112,9 @@ fn test_use_link_open_amount() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
-    client.use_link(&payer, &link_id, &1500i128, &None).unwrap();
+    client.use_link(&payer, &link_id, &1500i128, &None);
     let link = client.get_link(&link_id);
     assert_eq!(link.use_count, 1);
 }
@@ -136,7 +136,7 @@ fn test_deactivate_link() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     client.deactivate_link(&merchant, &link_id);
     let link = client.get_link(&link_id);
@@ -163,10 +163,10 @@ fn test_link_expired() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     env.ledger().set_timestamp(expiry + 1);
-    client.use_link(&payer, &link_id, &100i128, &None).unwrap();
+    client.use_link(&payer, &link_id, &100i128, &None);
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn test_verify_batch_returns_status_for_active_links() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
     client.create_link(
         &merchant,
         &link_id2,
@@ -199,12 +199,12 @@ fn test_verify_batch_returns_status_for_active_links() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     let results = client.verify_batch(&vec![&env, link_id1.clone(), link_id2.clone()]);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0], (link_id1.clone(), true, 0, None));
-    assert_eq!(results[1], (link_id2.clone(), true, 0, None));
+    assert_eq!(results.get(0).unwrap(), (link_id1.clone(), true, 0, None));
+    assert_eq!(results.get(1).unwrap(), (link_id2.clone(), true, 0, None));
 }
 
 #[test]
@@ -226,12 +226,12 @@ fn test_verify_batch_handles_missing_links() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     let results = client.verify_batch(&vec![&env, existing_link.clone(), missing_link.clone()]);
     assert_eq!(results.len(), 2);
-    assert_eq!(results[0], (existing_link.clone(), true, 0, None));
-    assert_eq!(results[1], (missing_link.clone(), false, 0, None));
+    assert_eq!(results.get(0).unwrap(), (existing_link.clone(), true, 0, None));
+    assert_eq!(results.get(1).unwrap(), (missing_link.clone(), false, 0, None));
 }
 
 #[test]
@@ -251,13 +251,13 @@ fn test_verify_batch_returns_inactive_for_deactivated_link() {
         &Some(10),
         &false,
         &None,
-    ).unwrap();
+    );
 
     client.deactivate_link(&merchant, &link_id);
 
     let results = client.verify_batch(&vec![&env, link_id.clone()]);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], (link_id.clone(), false, 0, Some(10)));
+    assert_eq!(results.get(0).unwrap(), (link_id.clone(), false, 0, Some(10)));
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn test_verify_batch_empty_input_returns_empty_vec() {
     env.mock_all_auths();
     let (_merchant, client) = setup_payment_link(&env);
 
-    let results: Vec<(String, bool, u32, Option<u32>)> = client.verify_batch(&vec![&env]);
+    let results = client.verify_batch(&soroban_sdk::vec![&env]);
     assert!(results.is_empty());
 }
 
@@ -289,11 +289,11 @@ fn test_max_uses() {
         &Some(1),
         &false,
         &None,
-    ).unwrap();
+    );
 
-    client.use_link(&payer, &link_id, &100i128, &None).unwrap();
+    client.use_link(&payer, &link_id, &100i128, &None);
     // Should fail on second use
-    client.use_link(&payer, &link_id, &100i128, &None).unwrap();
+    client.use_link(&payer, &link_id, &100i128, &None);
 }
 
 // ── Issue #111: Direct-to-Merchant Payment Flow ──────────────────────────────
@@ -327,7 +327,7 @@ fn test_direct_transfer_link_transfers_to_merchant() {
         &None,
         &true,
         &None, // direct_transfer = true
-    ).unwrap();
+    );
 
     let link = client.get_link(&link_id);
     assert!(link.direct_transfer);
@@ -335,7 +335,7 @@ fn test_direct_transfer_link_transfers_to_merchant() {
     let token_client = token::TokenClient::new(&env, &usdc_token);
     let merchant_balance_before = token_client.balance(&merchant);
 
-    client.use_link(&payer, &link_id, &amount, &Some(usdc_token.clone())).unwrap();
+    client.use_link(&payer, &link_id, &amount, &Some(usdc_token.clone()));
 
     let merchant_balance_after = token_client.balance(&merchant);
     assert_eq!(merchant_balance_after - merchant_balance_before, amount);
@@ -361,27 +361,29 @@ fn test_direct_transfer_without_token_address_fails() {
         &None,
         &true,
         &None,
-    ).unwrap();
+    );
 
     // Should fail because usdc_token is None but direct_transfer is true
-    client.use_link(&payer, &link_id, &500i128, &None).unwrap();
+    client.use_link(&payer, &link_id, &500i128, &None);
 }
 
 // ── Issue #317: Payment Link Metadata Validation ────────────────────────────
 
 #[test]
-#[should_panic(expected = "Error(Contract, #46)")]
+#[should_panic(expected = "Error(Contract, #49)")]
 fn test_metadata_too_large_21_keys() {
     let env = Env::default();
     env.mock_all_auths();
     let (merchant, client) = setup_payment_link(&env);
 
     let link_id = String::from_str(&env, "meta_large");
+    let keys_21 = [
+        "k0","k1","k2","k3","k4","k5","k6","k7","k8","k9",
+        "k10","k11","k12","k13","k14","k15","k16","k17","k18","k19","k20",
+    ];
     let mut metadata = Map::new(&env);
-    for i in 0..21 {
-        let key = String::from_str(&env, &format!("key_{}", i));
-        let value = String::from_str(&env, "value");
-        metadata.set(key, value);
+    for k in keys_21.iter() {
+        metadata.set(String::from_str(&env, k), String::from_str(&env, "v"));
     }
 
     client.create_link(
@@ -394,7 +396,7 @@ fn test_metadata_too_large_21_keys() {
         &None,
         &false,
         &Some(metadata),
-    ).unwrap();
+    );
 }
 
 #[test]
@@ -406,7 +408,7 @@ fn test_metadata_value_too_long_257_chars() {
 
     let link_id = String::from_str(&env, "meta_long");
     let mut metadata = Map::new(&env);
-    let long_value = String::from_str(&env, &"x".repeat(257));
+    let long_value = String::from_str(&env, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
     metadata.set(String::from_str(&env, "key"), long_value);
 
     client.create_link(
@@ -419,7 +421,7 @@ fn test_metadata_value_too_long_257_chars() {
         &None,
         &false,
         &Some(metadata),
-    ).unwrap();
+    );
 }
 
 #[test]
@@ -430,10 +432,13 @@ fn test_metadata_20_keys_256_char_values_succeeds() {
 
     let link_id = String::from_str(&env, "meta_valid");
     let mut metadata = Map::new(&env);
-    for i in 0..20 {
-        let key = String::from_str(&env, &format!("key_{}", i));
-        let value = String::from_str(&env, &"x".repeat(256));
-        metadata.set(key, value);
+    let keys_20 = [
+        "k0","k1","k2","k3","k4","k5","k6","k7","k8","k9",
+        "k10","k11","k12","k13","k14","k15","k16","k17","k18","k19",
+    ];
+    let val256 = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    for k in keys_20.iter() {
+        metadata.set(String::from_str(&env, k), String::from_str(&env, val256));
     }
 
     let id = client.create_link(
@@ -446,7 +451,7 @@ fn test_metadata_20_keys_256_char_values_succeeds() {
         &None,
         &false,
         &Some(metadata),
-    ).unwrap();
+    );
 
     assert_eq!(id, link_id);
     let link = client.get_link(&link_id);
@@ -470,7 +475,7 @@ fn test_metadata_none_succeeds() {
         &None,
         &false,
         &None,
-    ).unwrap();
+    );
 
     assert_eq!(id, link_id);
     let link = client.get_link(&link_id);

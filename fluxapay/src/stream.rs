@@ -302,12 +302,8 @@ impl PaymentStreaming {
         token_client.transfer(&stream.sender, env.current_contract_address(), &deposit);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "CREATED"),
-                stream_id.clone(),
-            ),
-            (stream.sender.clone(), stream.receiver.clone(), deposit),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "CREATED")),
+            (stream_id.clone(), stream.sender.clone(), stream.receiver.clone(), deposit),
         );
 
         Ok(stream)
@@ -349,12 +345,8 @@ impl PaymentStreaming {
             .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "DESTINATION_SET"),
-                stream_id,
-            ),
-            (recipient, destination),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "DESTINATION_SET")),
+            (stream_id, recipient, destination),
         );
 
         Ok(())
@@ -384,12 +376,8 @@ impl PaymentStreaming {
             .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "MILESTONE_APPROVED"),
-                stream_id,
-            ),
-            (sender,),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "MILESTONE_APPROVED")),
+            (stream_id, sender),
         );
 
         Ok(())
@@ -505,12 +493,8 @@ impl PaymentStreaming {
 
         // ── Step 3: Emit RateDecreased event ─────────────────────────────────
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "RATE_DECREASED"),
-                stream_id,
-            ),
-            (sender, old_rate, new_rate, surplus),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "RATE_DECREASED")),
+            (stream_id, sender, old_rate, new_rate, surplus),
         );
 
         Ok(())
@@ -659,12 +643,8 @@ impl PaymentStreaming {
                 release_lock(&env, &stream_id);
 
                 env.events().publish(
-                    (
-                        Symbol::new(&env, "STREAM"),
-                        Symbol::new(&env, "WITHDRAWN"),
-                        stream_id.clone(),
-                    ),
-                    (recipient.clone(), recipient.clone(), withdrawable, stream.remaining_deposit),
+                    (Symbol::new(&env, "STREAM"), Symbol::new(&env, "WITHDRAWN")),
+                    (stream_id.clone(), recipient.clone(), recipient.clone(), withdrawable, stream.remaining_deposit),
                 );
 
                 processed.push_back(stream_id);
@@ -747,70 +727,11 @@ impl PaymentStreaming {
         release_lock(&env, &stream_id);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "WITHDRAWN"),
-                stream_id.clone(),
-            ),
-            (stream.receiver.clone(), destination.clone(), withdrawable, stream.remaining_deposit),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "WITHDRAWN")),
+            (stream_id.clone(), stream.receiver.clone(), destination.clone(), withdrawable, stream.remaining_deposit),
         );
 
         Ok(stream_id)
-    }
-
-    /// Top up an existing payment stream with additional tokens.
-    ///
-    /// Any user may call this to add funds to an active stream. The caller
-    /// transfers `amount` tokens from their account into the contract.
-    ///
-    /// # Parameters
-    /// * `caller` – Account providing the tokens; must sign.
-    /// * `stream_id` – Stream to top up.
-    /// * `amount`    – Amount of tokens to add (must be positive).
-    pub fn top_up_stream(
-        env: Env,
-        caller: Address,
-        stream_id: String,
-        amount: i128,
-    ) -> Result<(), StreamError> {
-        caller.require_auth();
-
-        if amount <= 0 {
-            return Err(StreamError::InvalidDeposit);
-        }
-
-        let mut stream: PaymentStream = env
-            .storage()
-            .persistent()
-            .get(&StreamDataKey::Stream(stream_id.clone()))
-            .ok_or(StreamError::StreamNotFound)?;
-
-        if stream.status != StreamStatus::Active {
-            return Err(StreamError::StreamNotActive);
-        }
-
-        // Effects
-        stream.remaining_deposit = stream.remaining_deposit.saturating_add(amount);
-
-        // Persist state before interaction (CEI pattern)
-        env.storage()
-            .persistent()
-            .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
-
-        // Interaction
-        let token_client = token::Client::new(&env, &stream.token);
-        token_client.transfer(&caller, env.current_contract_address(), &amount);
-
-        env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "TOPPED_UP"),
-                stream_id,
-            ),
-            (caller, amount),
-        );
-
-        Ok(())
     }
 
     /// Top up multiple streams in a single atomic transaction.
@@ -829,7 +750,7 @@ impl PaymentStreaming {
 
         for top_up in top_ups.iter() {
             let (stream_id, amount) = top_up;
-            Self::top_up_stream_internal(&env, &sender, stream_id, *amount)?;
+            Self::top_up_stream_internal(&env, &sender, &stream_id, amount)?;
         }
 
         Ok(())
@@ -879,12 +800,8 @@ impl PaymentStreaming {
         token_client.transfer(sender, env.current_contract_address(), &amount);
 
         env.events().publish(
-            (
-                Symbol::new(env, "STREAM"),
-                Symbol::new(env, "TOPPED_UP"),
-                stream_id.clone(),
-            ),
-            (sender.clone(), amount),
+            (Symbol::new(env, "STREAM"), Symbol::new(env, "TOPPED_UP")),
+            (stream_id.clone(), sender.clone(), amount),
         );
 
         Ok(())
@@ -946,12 +863,8 @@ impl PaymentStreaming {
         }
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "CANCELLED"),
-                stream_id,
-            ),
-            (sender, accrued, refund),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "CANCELLED")),
+            (stream_id, sender, accrued, refund),
         );
 
         Ok(())
@@ -998,12 +911,8 @@ impl PaymentStreaming {
             .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "PAUSED"),
-                stream_id,
-            ),
-            (sender,),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "PAUSED")),
+            (stream_id, sender),
         );
 
         Ok(())
@@ -1041,12 +950,8 @@ impl PaymentStreaming {
             .set(&StreamDataKey::Stream(stream_id.clone()), &stream);
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "RESUMED"),
-                stream_id,
-            ),
-            (sender,),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "RESUMED")),
+            (stream_id, sender),
         );
 
         Ok(())
@@ -1111,12 +1016,8 @@ impl PaymentStreaming {
             }
 
             env.events().publish(
-                (
-                    Symbol::new(&env, "STREAM"),
-                    Symbol::new(&env, "CANCELLED"),
-                    stream_id.clone(),
-                ),
-                (sender.clone(), accrued, refund),
+                (Symbol::new(&env, "STREAM"), Symbol::new(&env, "CANCELLED")),
+                (stream_id.clone(), sender.clone(), accrued, refund),
             );
 
             cancelled.push_back(stream_id);
@@ -1208,12 +1109,8 @@ impl PaymentStreaming {
         }
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "RATE_UPDATED"),
-                stream_id,
-            ),
-            (sender, old_rate, new_rate, surplus),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "RATE_UPDATED")),
+            (stream_id, sender, old_rate, new_rate, surplus),
         );
 
         Ok(())
@@ -1257,12 +1154,8 @@ impl PaymentStreaming {
             .remove(&StreamDataKey::Stream(stream_id.clone()));
 
         env.events().publish(
-            (
-                Symbol::new(&env, "STREAM"),
-                Symbol::new(&env, "CLOSED"),
-                stream_id,
-            ),
-            (stream.sender, stream.receiver, residual),
+            (Symbol::new(&env, "STREAM"), Symbol::new(&env, "CLOSED")),
+            (stream_id, stream.sender, stream.receiver, residual),
         );
 
         Ok(())
@@ -1325,12 +1218,8 @@ impl PaymentStreaming {
             }
 
             env.events().publish(
-                (
-                    Symbol::new(&env, "STREAM"),
-                    Symbol::new(&env, "CANCELLED"),
-                    stream_id.clone(),
-                ),
-                (sender.clone(), accrued, refund),
+                (Symbol::new(&env, "STREAM"), Symbol::new(&env, "CANCELLED")),
+                (stream_id.clone(), sender.clone(), accrued, refund),
             );
 
             cancelled.push_back(stream_id);
@@ -1421,12 +1310,8 @@ impl PaymentStreaming {
             );
 
             env.events().publish(
-                (
-                    Symbol::new(&env, "STREAM"),
-                    Symbol::new(&env, "WITHDRAWN"),
-                    w.stream_id.clone(),
-                ),
-                (recipient.clone(), w.destination.clone(), withdrawable, stream.remaining_deposit),
+                (Symbol::new(&env, "STREAM"), Symbol::new(&env, "WITHDRAWN")),
+                (w.stream_id.clone(), recipient.clone(), w.destination.clone(), withdrawable, stream.remaining_deposit),
             );
 
             processed.push_back(w.stream_id.clone());
